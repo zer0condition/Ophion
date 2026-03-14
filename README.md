@@ -1,6 +1,6 @@
 # Ophion
 
-**Intel VT-x Type-1 hypervisor that virtualizes an already running Windows system. Designed for stealth: passes common hypervisor detection checks and works with EAC/BE/AVs out of the box. (possibly more, these are the only that have been tested) **
+Intel VT-x Type-1 hypervisor that virtualizes an already running Windows system. Designed for stealth: passes common hypervisor detection checks and works with **EAC/BE/AVs out of the box.** (possibly more, these are the only that have been tested)
 
 ![Demo](vmaware.png)
 ***
