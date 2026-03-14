@@ -134,6 +134,12 @@ Passes with all stealth toggles enabled:
 
 ***
 
+## Disclaimer
+
+This project has not been thoroughly tested for long-term usage or stability. It is intended primarily as a learning resource and a foundation for further development. Use at your own risk.
+
+***
+
 ## Credits
 
 - [HyperDbg](https://github.com/HyperDbg/HyperDbg) — Referenced for VMX architecture and VM-exit handling patterns
