@@ -1,7 +1,8 @@
 # Ophion
 
-Intel VT-x Type-1 hypervisor that virtualizes an already running Windows system. Designed for stealth — passes common hypervisor detection checks and works with EAC/BE/AVs out of the box.
+**Intel VT-x Type-1 hypervisor that virtualizes an already running Windows system. Designed for stealth: passes common hypervisor detection checks and works with EAC/BE/AVs out of the box.**
 
+![Demo](vmaware.png)
 ***
 
 ## Features
@@ -35,7 +36,7 @@ Intel VT-x Type-1 hypervisor that virtualizes an already running Windows system.
 | **PFEC mask/match** | Both 0 — all #PFs go to guest |
 | **CR0 mask** | 0 (full pass-through) |
 | **CR4 mask** | Bit 13 (VMXE) when stealth enabled, 0 otherwise |
-| **MSR bitmap** | Intercept RDMSR(0x10) only |
+| **MSR bitmap** | Intercept RDMSR(0x10), IA32_FEATURE_CONTROL (0x3A), VMX capability MSRs (0x480-0x493) |
 | **I/O bitmaps** | All zeros |
 | **EPT pointer** | WB cache, 4-level walk |
 | **VPID** | Tag 1 |
@@ -143,6 +144,7 @@ This project has not been thoroughly tested for long-term usage or stability. It
 ## Credits
 
 - [HyperDbg](https://github.com/HyperDbg/HyperDbg) — Referenced for VMX architecture and VM-exit handling patterns
+- [humzak711](https://github.com/humzak711) — Stealth feedback: MSR feature hiding (IA32_FEATURE_CONTROL, VMX MSRs), CPUID SMX masking
 - [VMAware](https://github.com/kernelwernel/VMAware) — Hypervisor detection testing
 - [hvdetecc](https://github.com/can1357/hvdetecc) — Hypervisor detection testing
 - [Claude](https://claude.ai) — Debugging assistance and IA-32 architecture research
