@@ -508,10 +508,9 @@ vmx_init(VOID)
 
         //
         // intercept RDMSR(0x10) — IA32_TIME_STAMP_COUNTER
-        // stealth: RDMSR(0x10) must return TSC + offset (same as RDTSC)
-        // without interception, the guest reads raw hardware TSC which
-        // differs from RDTSC (which includes TSC offset) — detected by
-        // vm.tscMsrEmulFail
+        // per SDM 27.6.5, "use TSC offsetting" applies the offset to RDMSR(0x10)
+        // automatically. interception is only needed so the TSC compensation path
+        // can cover RDMSR-based timing attacks alongside RDTSC.
         //
         ((PUCHAR)vcpu->msr_bitmap_va)[0x10 / 8] |= (UCHAR)(1 << (0x10 % 8));
 

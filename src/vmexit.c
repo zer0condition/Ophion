@@ -149,8 +149,8 @@ vmexit_handle_cpuid(VIRTUAL_MACHINE_STATE * vcpu)
 
 //
 // Defeats:
-//   - RDMSR(0x10) must return same value as RDTSC
 //   - MSRs 0x40000000+ must #GP like bare metal
+//   - IA32_FEATURE_CONTROL must hide VMX/SMX enables
 //
 
 VOID
@@ -200,12 +200,13 @@ vmexit_handle_msr_read(VIRTUAL_MACHINE_STATE * vcpu)
             break;
 
         //
-        // IA32_TIME_STAMP_COUNTER (MSR 0x10) — Stealth: must match RDTSC
+        // IA32_TIME_STAMP_COUNTER (MSR 0x10)
         //
-        // some anti-cheats compare RDMSR(0x10) vs RDTSC. on bare metal they're
-        // identical. in a hypervisor, RDTSC uses TSC_OFFSET but RDMSR doesn't.
-        // we manually apply the TSC offset to match guest-visible RDTSC.
-        //
+        // intercepted via MSR bitmap. in the handler, __rdtsc() returns raw
+        // hardware TSC (no offset in VMX root), so we apply TSC_OFFSET manually.
+        // per SDM 27.6.5, "use TSC offsetting" applies the same offset to RDTSC,
+        // RDTSCP, and RDMSR of this MSR — interception is only needed so the
+        // TSC compensation path can also cover RDMSR-based timing attacks.
         //
         case 0x10:
         {
@@ -1150,7 +1151,6 @@ vmexit_handler(_Inout_ PGUEST_REGS regs, _In_ VIRTUAL_MACHINE_STATE * vcpu)
         break;
 
     case VMX_EXIT_REASON_EXECUTE_PAUSE:
-        _mm_pause();
         break;
 
     case VMX_EXIT_REASON_EXECUTE_RDTSCP:
