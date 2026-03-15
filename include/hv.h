@@ -84,6 +84,7 @@ VOID vmexit_handle_triple_fault(VIRTUAL_MACHINE_STATE * vcpu);
 //
 VOID vmexit_inject_gp(VOID);
 VOID vmexit_inject_ud(VOID);
+VOID vmexit_inject_df(VOID);
 VOID vmexit_inject_interrupt(UINT32 vector);
 VOID vmexit_inject_bp(VOID);
 VOID vmexit_inject_pf(UINT32 error_code, UINT64 fault_addr);

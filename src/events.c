@@ -37,6 +37,21 @@ vmexit_inject_ud(VOID)
 }
 
 VOID
+vmexit_inject_df(VOID)
+{
+    VMENTRY_INTERRUPT_INFORMATION info = {0};
+
+    info.Vector           = EXCEPTION_VECTOR_DOUBLE_FAULT;
+    info.InterruptionType = INTERRUPT_TYPE_HARDWARE_EXCEPTION;
+    info.DeliverErrorCode = 1;
+    info.Valid            = 1;
+
+    __vmx_vmwrite(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, info.AsUInt);
+    __vmx_vmwrite(VMCS_CTRL_VMENTRY_EXCEPTION_ERROR_CODE, 0);
+    __vmx_vmwrite(VMCS_GUEST_PENDING_DEBUG_EXCEPTIONS, 0);
+}
+
+VOID
 vmexit_inject_interrupt(UINT32 vector)
 {
     VMENTRY_INTERRUPT_INFORMATION info = {0};

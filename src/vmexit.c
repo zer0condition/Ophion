@@ -74,6 +74,60 @@ vmexit_advance_rip(VIRTUAL_MACHINE_STATE * vcpu)
     }
 }
 
+//
+// exception classification for double-fault generation (SDM Vol 3 Table 6-5)
+//
+// contributory: #DE(0), #TS(10), #NP(11), #SS(12), #GP(13)
+// page fault:   #PF(14)
+// double fault: #DF(8)
+// everything else: benign
+//
+
+typedef enum {
+    EXCEPTION_CLASS_BENIGN,
+    EXCEPTION_CLASS_CONTRIBUTORY,
+    EXCEPTION_CLASS_PAGE_FAULT,
+    EXCEPTION_CLASS_DOUBLE_FAULT
+} EXCEPTION_CLASS;
+
+static __forceinline EXCEPTION_CLASS
+classify_exception(UINT32 vector)
+{
+    switch (vector)
+    {
+    case EXCEPTION_VECTOR_DIVIDE_ERROR:
+    case EXCEPTION_VECTOR_INVALID_TSS:
+    case EXCEPTION_VECTOR_SEGMENT_NOT_PRESENT:
+    case EXCEPTION_VECTOR_STACK_SEGMENT_FAULT:
+    case EXCEPTION_VECTOR_GENERAL_PROTECTION:
+        return EXCEPTION_CLASS_CONTRIBUTORY;
+    case EXCEPTION_VECTOR_PAGE_FAULT:
+        return EXCEPTION_CLASS_PAGE_FAULT;
+    case EXCEPTION_VECTOR_DOUBLE_FAULT:
+        return EXCEPTION_CLASS_DOUBLE_FAULT;
+    default:
+        return EXCEPTION_CLASS_BENIGN;
+    }
+}
+
+static __forceinline BOOLEAN
+should_generate_df(UINT32 first_vector, UINT32 second_vector)
+{
+    EXCEPTION_CLASS first  = classify_exception(first_vector);
+    EXCEPTION_CLASS second = classify_exception(second_vector);
+
+    // contributory + contributory = #DF
+    if (first == EXCEPTION_CLASS_CONTRIBUTORY && second == EXCEPTION_CLASS_CONTRIBUTORY)
+        return TRUE;
+
+    // PF + contributory or PF + PF = #DF
+    if (first == EXCEPTION_CLASS_PAGE_FAULT &&
+        (second == EXCEPTION_CLASS_CONTRIBUTORY || second == EXCEPTION_CLASS_PAGE_FAULT))
+        return TRUE;
+
+    return FALSE;
+}
+
 UINT64
 vmx_return_rsp_for_vmxoff(VOID)
 {
@@ -566,8 +620,7 @@ vmexit_handle_ept_violation(VIRTUAL_MACHINE_STATE * vcpu)
     UINT64 guest_phys = 0;
     __vmx_vmread(VMCS_GUEST_PHYSICAL_ADDRESS, &guest_phys);
 
-    DbgPrintEx(0, 0, "[hv] EPT violation at GPA: 0x%llx, Qualification: 0x%llx\n",
-             guest_phys, vcpu->exit_qual);
+    UNREFERENCED_PARAMETER(guest_phys);
 
     vmexit_inject_gp();
     vcpu->advance_rip = FALSE;
@@ -646,10 +699,6 @@ VOID
 vmexit_handle_triple_fault(VIRTUAL_MACHINE_STATE * vcpu)
 {
     UNREFERENCED_PARAMETER(vcpu);
-
-    DbgPrintEx(0, 0, "[hv] TRIPLE FAULT on core %u! Guest RIP: 0x%llx\n",
-             vcpu->core_id, vcpu->vmexit_rip);
-
     vcpu->advance_rip = FALSE;
 }
 
@@ -962,15 +1011,14 @@ vmexit_handler(_Inout_ PGUEST_REGS regs, _In_ VIRTUAL_MACHINE_STATE * vcpu)
 
     case VMX_EXIT_REASON_EPT_MISCONFIGURATION:
     {
-        UINT64 guest_phys = 0;
-        __vmx_vmread(VMCS_GUEST_PHYSICAL_ADDRESS, &guest_phys);
-        DbgPrintEx(0, 0, "[hv] EPT Misconfiguration! GPA: 0x%llx, RIP: 0x%llx\n",
-                 guest_phys, vcpu->vmexit_rip);
         //
-        // inject #GP to let the guest handle it. Without this, the
-        // guest replays the faulting instruction -> infinite loop
+        // EPT misconfiguration is a host-side fault — the EPT entry has
+        // invalid configuration (reserved bits, write-only, etc).
+        // the guest didn't cause this and can't handle it.
+        // enter shutdown state — system will triple-fault cleanly.
         //
-        vmexit_inject_gp();
+        __vmx_vmwrite(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, 0);
+        __vmx_vmwrite(VMCS_GUEST_ACTIVITY_STATE, GUEST_ACTIVITY_STATE_SHUTDOWN);
         vcpu->advance_rip = FALSE;
         break;
     }
@@ -1085,6 +1133,20 @@ vmexit_handler(_Inout_ PGUEST_REGS regs, _In_ VIRTUAL_MACHINE_STATE * vcpu)
 
         if (int_info.Valid)
         {
+            if (int_info.InterruptionType == INTERRUPT_TYPE_NMI)
+            {
+                //
+                // with virtual NMIs, the NMI exit sets blocking-by-NMI.
+                // clear it before reinjecting — the NMI was intercepted
+                // before guest delivery, and VM-entry re-sets blocking
+                // when it delivers the injected NMI (SDM 26.6.1.2).
+                //
+                size_t intr_state = 0;
+                __vmx_vmread(VMCS_GUEST_INTERRUPTIBILITY_STATE, &intr_state);
+                intr_state &= ~(size_t)GUEST_INTR_STATE_BLOCKING_BY_NMI;
+                __vmx_vmwrite(VMCS_GUEST_INTERRUPTIBILITY_STATE, intr_state);
+            }
+
             __vmx_vmwrite(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, int_info.AsUInt);
 
             if (int_info.DeliverErrorCode)
@@ -1194,8 +1256,6 @@ vmexit_handler(_Inout_ PGUEST_REGS regs, _In_ VIRTUAL_MACHINE_STATE * vcpu)
         break;
 
     default:
-        DbgPrintEx(0, 0, "[hv] Unhandled VM-exit reason: 0x%x, RIP: 0x%llx\n",
-                 exit_reason, vcpu->vmexit_rip);
         break;
     }
 
@@ -1213,45 +1273,80 @@ vmexit_handler(_Inout_ PGUEST_REGS regs, _In_ VIRTUAL_MACHINE_STATE * vcpu)
 
         if (idt_vec.Valid)
         {
-            // if the handler already queued an NMI injection, defer it —
-            // IDT vectoring event takes priority
-            size_t entry_info_raw = 0;
-            __vmx_vmread(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, &entry_info_raw);
+            BOOLEAN reinject_idt = TRUE;
 
-            VMENTRY_INTERRUPT_INFORMATION entry_info;
-            entry_info.AsUInt = (UINT32)entry_info_raw;
-
-            if (entry_info.Valid && entry_info.InterruptionType == INTERRUPT_TYPE_NMI)
+            //
+            // exception combining (SDM Vol 3 Table 6-5):
+            // when a hardware exception occurs during delivery of another
+            // hardware exception, certain combinations produce #DF or
+            // triple fault instead of serial delivery.
+            //
+            if (exit_reason == VMX_EXIT_REASON_EXCEPTION_OR_NMI)
             {
-                vcpu->has_pending_nmi = TRUE;
+                size_t exit_int_raw = 0;
+                __vmx_vmread(VMCS_VMEXIT_INTERRUPTION_INFORMATION, &exit_int_raw);
 
-                size_t proc_ctrl = 0;
-                __vmx_vmread(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, &proc_ctrl);
-                proc_ctrl |= (size_t)CPU_BASED_VM_EXEC_CTRL_NMI_WINDOW_EXITING;
-                __vmx_vmwrite(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, proc_ctrl);
+                VMENTRY_INTERRUPT_INFORMATION exit_int;
+                exit_int.AsUInt = (UINT32)exit_int_raw;
 
-                // clear NMI blocking so the window opens after the IDT event
-                size_t intr_state = 0;
-                __vmx_vmread(VMCS_GUEST_INTERRUPTIBILITY_STATE, &intr_state);
-                intr_state &= ~(size_t)GUEST_INTR_STATE_BLOCKING_BY_NMI;
-                __vmx_vmwrite(VMCS_GUEST_INTERRUPTIBILITY_STATE, intr_state);
+                if (exit_int.Valid &&
+                    idt_vec.InterruptionType == INTERRUPT_TYPE_HARDWARE_EXCEPTION &&
+                    exit_int.InterruptionType == INTERRUPT_TYPE_HARDWARE_EXCEPTION)
+                {
+                    if (classify_exception(idt_vec.Vector) == EXCEPTION_CLASS_DOUBLE_FAULT)
+                    {
+                        // #DF + any exception = triple fault
+                        __vmx_vmwrite(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, 0);
+                        __vmx_vmwrite(VMCS_GUEST_ACTIVITY_STATE, GUEST_ACTIVITY_STATE_SHUTDOWN);
+                        reinject_idt = FALSE;
+                    }
+                    else if (should_generate_df(idt_vec.Vector, exit_int.Vector))
+                    {
+                        // contributory+contributory, PF+contributory, PF+PF → #DF
+                        vmexit_inject_df();
+                        reinject_idt = FALSE;
+                    }
+                    // else: benign combination — reinject IDT event,
+                    // exit exception regenerates during delivery
+                }
             }
 
-            __vmx_vmwrite(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, idt_vec.AsUInt);
-
-            if (idt_vec.DeliverErrorCode)
+            if (reinject_idt)
             {
-                size_t idt_err = 0;
-                __vmx_vmread(VMCS_IDT_VECTORING_ERROR_CODE, &idt_err);
-                __vmx_vmwrite(VMCS_CTRL_VMENTRY_EXCEPTION_ERROR_CODE, idt_err);
-            }
+                // if the handler already queued an NMI injection, defer it —
+                // IDT vectoring event takes priority
+                size_t entry_info_raw = 0;
+                __vmx_vmread(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, &entry_info_raw);
 
-            if (idt_vec.InterruptionType == INTERRUPT_TYPE_SOFTWARE_EXCEPTION ||
-                idt_vec.InterruptionType == INTERRUPT_TYPE_SOFTWARE_INTERRUPT)
-            {
-                size_t instr_len = 0;
-                __vmx_vmread(VMCS_VMEXIT_INSTRUCTION_LENGTH, &instr_len);
-                __vmx_vmwrite(VMCS_CTRL_VMENTRY_INSTRUCTION_LENGTH, instr_len);
+                VMENTRY_INTERRUPT_INFORMATION entry_info;
+                entry_info.AsUInt = (UINT32)entry_info_raw;
+
+                if (entry_info.Valid && entry_info.InterruptionType == INTERRUPT_TYPE_NMI)
+                {
+                    vcpu->has_pending_nmi = TRUE;
+
+                    size_t proc_ctrl = 0;
+                    __vmx_vmread(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, &proc_ctrl);
+                    proc_ctrl |= (size_t)CPU_BASED_VM_EXEC_CTRL_NMI_WINDOW_EXITING;
+                    __vmx_vmwrite(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, proc_ctrl);
+                }
+
+                __vmx_vmwrite(VMCS_CTRL_VMENTRY_INTERRUPTION_INFORMATION_FIELD, idt_vec.AsUInt);
+
+                if (idt_vec.DeliverErrorCode)
+                {
+                    size_t idt_err = 0;
+                    __vmx_vmread(VMCS_IDT_VECTORING_ERROR_CODE, &idt_err);
+                    __vmx_vmwrite(VMCS_CTRL_VMENTRY_EXCEPTION_ERROR_CODE, idt_err);
+                }
+
+                if (idt_vec.InterruptionType == INTERRUPT_TYPE_SOFTWARE_EXCEPTION ||
+                    idt_vec.InterruptionType == INTERRUPT_TYPE_SOFTWARE_INTERRUPT)
+                {
+                    size_t instr_len = 0;
+                    __vmx_vmread(VMCS_VMEXIT_INSTRUCTION_LENGTH, &instr_len);
+                    __vmx_vmwrite(VMCS_CTRL_VMENTRY_INSTRUCTION_LENGTH, instr_len);
+                }
             }
 
             vcpu->advance_rip = FALSE;

@@ -239,8 +239,21 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
 
     __vmx_vmwrite(VMCS_CTRL_SECONDARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, sec_proc);
 
-    UINT32 pin_ctrl = vmx_adjust_controls(0,
+    UINT32 pin_ctrl = vmx_adjust_controls(
+        PIN_BASED_VM_EXEC_CTRL_NMI_EXITING |
+        PIN_BASED_VM_EXEC_CTRL_VIRTUAL_NMI,
         vmx_basic.VmxControls ? IA32_VMX_TRUE_PINBASED_CTLS : IA32_VMX_PINBASED_CTLS);
+
+    //
+    // SDM: "virtual NMIs" requires "NMI exiting" — some nested VMX
+    // implementations (Hyper-V) don't advertise NMI exiting in the
+    // capability MSR's allowed-1 set despite supporting it.
+    // Force the constraint; if truly unsupported, VMLAUNCH will fail
+    // with a clear error rather than the cryptic VirtNMI-without-NMI.
+    //
+    if (pin_ctrl & PIN_BASED_VM_EXEC_CTRL_VIRTUAL_NMI)
+        pin_ctrl |= PIN_BASED_VM_EXEC_CTRL_NMI_EXITING;
+
     __vmx_vmwrite(VMCS_CTRL_PIN_BASED_VM_EXECUTION_CONTROLS, pin_ctrl);
 
     DbgPrintEx(0, 0, "[hv] Pin controls: 0x%08X (ExtInt=%d NMI=%d VirtNMI=%d Preempt=%d)\n",
