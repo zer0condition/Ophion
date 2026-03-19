@@ -9,16 +9,20 @@ vmexit_advance_rip(VIRTUAL_MACHINE_STATE * vcpu)
     UINT64 instr_len = 0;
     __vmx_vmread(VMCS_VMEXIT_INSTRUCTION_LENGTH, &instr_len);
 
-    UINT64 old_rip = vcpu->vmexit_rip;
-    UINT64 new_rip = old_rip + instr_len;
+    UINT64 new_rip = vcpu->vmexit_rip + instr_len;
 
-    // 32-bit mode RIP wraparound (KVM optimization)
-    if (((new_rip ^ old_rip) >> 31) == 3)
+    //
+    // truncate RIP for non-64-bit segments (compatibility mode)
+    // CS.L=0 CS.D=1 -> 32-bit, CS.L=0 CS.D=0 -> 16-bit
+    //
+    size_t cs_ar_raw = 0;
+    __vmx_vmread(VMCS_GUEST_CS_ACCESS_RIGHTS, &cs_ar_raw);
+    if (!((cs_ar_raw >> 13) & 1))
     {
-        size_t cs_ar_raw = 0;
-        __vmx_vmread(VMCS_GUEST_CS_ACCESS_RIGHTS, &cs_ar_raw);
-        if (!((cs_ar_raw >> 13) & 1))  // CS.L = 0
+        if ((cs_ar_raw >> 14) & 1)
             new_rip = (UINT32)new_rip;
+        else
+            new_rip = (UINT16)new_rip;
     }
 
     __vmx_vmwrite(VMCS_GUEST_RIP, new_rip);
