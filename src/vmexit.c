@@ -315,8 +315,24 @@ vmexit_handle_msr_read(VIRTUAL_MACHINE_STATE * vcpu)
         }
 
         default:
-            msr.Flags = __readmsr(target_msr);
-            break;
+            //
+            // VMX capability MSRs (0x480-0x493) — always readable on VMX-capable
+            // CPUs regardless of FEATURE_CONTROL lock state. return real values
+            // to match bare-metal behavior for stealth.
+            //
+            if (target_msr >= IA32_VMX_BASIC && target_msr <= 0x493)
+            {
+                msr.Flags = __readmsr(target_msr);
+                break;
+            }
+
+            //
+            // unhandled — never forward to hardware in VMX-root, would #GP
+            // and hit our private IDT halt handler. inject #GP(0) to guest.
+            //
+            vmexit_inject_gp();
+            vcpu->advance_rip = FALSE;
+            return;
         }
 
         regs->rax = (UINT64)msr.Fields.Low;
@@ -385,8 +401,13 @@ vmexit_handle_msr_write(VIRTUAL_MACHINE_STATE * vcpu)
             break;
 
         default:
-            __writemsr(target_msr, msr.Flags);
-            break;
+            //
+            // unhandled — never forward to hardware in VMX-root, would #GP
+            // and hit our private IDT halt handler. inject #GP(0) to guest.
+            //
+            vmexit_inject_gp();
+            vcpu->advance_rip = FALSE;
+            return;
         }
     }
     else
