@@ -1,8 +1,9 @@
 # Ophion
+<div align="center"> <img src="logo.png" alt="Demo" width="800"/> </div>
 
 Intel VT-x Type-2 hypervisor that virtualizes an already running Windows system. Designed for stealth: passes common hypervisor detection checks and works with **EAC/BE/AVs out of the box.** (possibly more, these are the only that have been tested)
 
-![Demo](vmaware.png)
+
 ***
 
 ## Blog
@@ -19,12 +20,13 @@ Intel VT-x Type-2 hypervisor that virtualizes an already running Windows system.
 - **EPT with 2MB large pages** — Identity-mapped, MTRR-aware memory typing (fixed + variable ranges). Per-processor page tables with dynamic 2MB-to-4KB splitting for hooks.
 - **VPID** — Capability-aware INVVPID (prefers type 3 retaining-globals, falls back gracefully).
 - **Private host CR3** — Deep-copied kernel page tables isolate host mode from guest PT corruption. Built after all allocations so VMM stacks and bitmaps are mapped.
+- **Private host IDT** — Isolated IDT for VMX-root mode prevents NMI hijacking (guest corrupts OS IDT, triggers NMI while in host mode). NMIs are flagged and injected to guest on next VM-exit.
 - **CPUID caching** — Caches bare-metal CPUID at init. Invalid/hypervisor-range leaves return cached native values. Clears ECX[31] on leaf 1.
 - **CR4.VMXE hiding** — Guest CR4 reads/writes go through shadow with VMXE stripped. CR0/CR4 writes enforce VMX fixed bits in actual VMCS.
 - **TSC compensation** — "Trap next RDTSC" after CPUID VM-exit. Returns `cpuid_entry_tsc + bare_metal_cost + offset`. TSC_OFFSET never modified — zero drift.
 - **MSR emulation** — Intercepts RDMSR(0x10) to apply TSC offset. Synthetic MSR range (0x40000000+) injects #GP.
 - **External interrupt re-injection** — ACK-on-exit with deferred delivery via interrupt-window exiting when guest is not interruptible.
-- **IDT vectoring** — Re-injects interrupted IDT events with priority. NMI deferral via NMI-window exiting on collision.
+- **IDT vectoring** — Re-injects interrupted IDT events with priority. NMI deferral via NMI-window exiting on collision. Exception combining per SDM Table 6-5 (#DF generation, triple fault on #DF+exception).
 - **Debug register passthrough** — Full DR0-DR7 with DR4/DR5 aliasing. Hardware BP matching merged into pending debug exceptions on RIP advance.
 - **XSETBV validation** — SDM-compliant XCR0 validation using hardware capability mask from CPUID.0Dh.
 - **MOV CR handling** — CR3 writes strip PCID bit 63, flush via INVVPID. CLTS and LMSW per SDM.
@@ -36,7 +38,7 @@ Intel VT-x Type-2 hypervisor that virtualizes an already running Windows system.
 
 | Field | Value |
 |-------|-------|
-| **Pin-based** | External-interrupt exiting, NMI exiting |
+| **Pin-based** | External-interrupt exiting, NMI exiting, virtual NMIs |
 | **Primary proc** | TSC offsetting, MSR bitmaps, I/O bitmaps, activate secondary. CR3/HLT/MOV-DR/RDTSC/INVLPG exiting may be forced by must-be-1 bits. |
 | **Secondary proc** | EPT, VPID, RDTSCP, INVPCID, XSAVES/XRSTORS |
 | **Exit** | 64-bit host, save debug controls, ACK interrupt on exit |
@@ -49,6 +51,7 @@ Intel VT-x Type-2 hypervisor that virtualizes an already running Windows system.
 | **EPT pointer** | WB cache, 4-level walk |
 | **VPID** | Tag 1 |
 | **HOST_CR3** | Private deep-copied kernel PTs (or system CR3 if disabled) |
+| **HOST_IDTR** | Private IDT with controlled handlers (or system IDT if disabled) |
 
 ***
 
@@ -67,9 +70,10 @@ src/
     vmx.c               VMX lifecycle (VMXON/VMCS alloc, VMCS programming, launch)
     vmexit.c            VM-exit handler (CPUID, CR, MSR, EPT, interrupts, etc.)
     ept.c               EPT init, MTRR map, identity mapping, split/lookup
-    events.c            Exception/interrupt injection (#GP, #UD, #BP, #PF, external)
+    events.c            Exception/interrupt injection (#GP, #UD, #DF, #BP, #PF, external)
     broadcast.c         Multi-processor DPC broadcast for virtualize/terminate
     hostcr3.c           Private host page table deep-copy
+    hostidt.c           Private host IDT for VMX-root mode
     stealth.c           CPUID cache init, bare-metal cost calibration, XCR0 validation
     globals.c           Global variable definitions
     util.c              VA/PA translation, GDT/segment helpers
@@ -81,6 +85,7 @@ asm/
     AsmVmxIntrinsics.asm    INVEPT/INVVPID wrappers
     AsmSegmentRegs.asm      Segment register getters/setters, GDT/IDT
     AsmCommon.asm           RFLAGS, GDTR/IDTR reload, CR2 write
+    AsmHostIdt.asm          Private host IDT handlers (NMI, #DF, #GP)
 ```
 
 ***
@@ -124,6 +129,7 @@ Defined in `include/stealth.h`:
 | `STEALTH_COMPENSATE_TIMING` | 1 | TSC compensation for RDTSC+CPUID+RDTSC timing attacks |
 | `STEALTH_CPUID_CACHING` | 1 | Cache native CPUID responses for invalid/hypervisor leaves |
 | `USE_PRIVATE_HOST_CR3` | 1 | Isolated host page tables (deep-copied kernel PTs) |
+| `USE_PRIVATE_HOST_IDT` | 1 | Isolated host IDT (prevents NMI hijacking in VMX-root) |
 
 ***
 
@@ -141,6 +147,7 @@ Passes with all stealth toggles enabled:
 - [VMAware](https://github.com/kernelwernel/VMAware) — DR trap (DR0 + TF on CPUID, DR6 BS+B0), CPUID checks
 - [checkhv_um](https://github.com/zer0condition/checkhv_um) — RDTSC+CPUID+RDTSC timing, CPUID leaf enumeration, brand string
 
+![VMAware](vmaware.png)
 ***
 
 ## Disclaimer

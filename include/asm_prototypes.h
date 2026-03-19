@@ -56,3 +56,11 @@ extern VOID asm_vmexit_handler(VOID);
 //
 extern UINT8 asm_invept(UINT32 type, PVOID descriptor);
 extern UINT8 asm_invvpid(UINT32 type, PVOID descriptor);
+
+//
+// host IDT handlers (AsmHostIdt.asm)
+//
+extern VOID asm_host_nmi_handler(VOID);
+extern VOID asm_host_df_handler(VOID);
+extern VOID asm_host_gp_handler(VOID);
+extern VOID asm_host_default_handler(VOID);

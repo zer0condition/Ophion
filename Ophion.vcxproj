@@ -112,6 +112,7 @@
     <ClCompile Include="src\util.c" />
     <ClCompile Include="src\stealth.c" />
     <ClCompile Include="src\hostcr3.c" />
+    <ClCompile Include="src\hostidt.c" />
   </ItemGroup>
   <!-- Assembly Files (MASM x64) -->
   <ItemGroup>
@@ -121,6 +122,7 @@
     <MASM Include="asm\AsmVmxContext.asm" />
     <MASM Include="asm\AsmVmexitHandler.asm" />
     <MASM Include="asm\AsmVmxIntrinsics.asm" />
+    <MASM Include="asm\AsmHostIdt.asm" />
   </ItemGroup>
   <!-- Header Files -->
   <ItemGroup>

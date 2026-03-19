@@ -41,6 +41,20 @@
 #define USE_PRIVATE_HOST_CR3                1
 
 //
+// private host IDT for VMCS_HOST_IDTR_BASE
+// prevents NMI hijacking (attacker corrupts OS IDT vector 2, triggers
+// NMI from another core while in VMX-root -> code execution in ring 0)
+//
+// SEH note: windows SEH cannot work in VMX-root mode — we use a private
+// stack, private CR3, and private IDT. the OS exception dispatcher cannot
+// unwind our stack or find our exception handlers. the only solution is
+// defensive coding: never cause exceptions in host mode. if one occurs
+// (#GP, #PF, etc), our IDT handlers halt the cpu rather than corrupt state.
+// on VMXOFF we restore the OS IDT so normal exception handling resumes.
+//
+#define USE_PRIVATE_HOST_IDT                1
+
+//
 // CR4.VMXE — bit 13 (may already be defined in ia32.h)
 //
 #ifndef CR4_VMX_ENABLE_FLAG

@@ -156,8 +156,18 @@ typedef struct _VIRTUAL_MACHINE_STATE {
 #define VMCALL_TEST             0x00000001
 #define VMCALL_VMXOFF           0x00000002
 
+// per-cpu NMI pending flag for host IDT NMI handler
+extern volatile LONG g_host_nmi_pending[MAX_PROCESSORS];
+
+typedef struct _HOST_IDT_STATE {
+    DECLSPEC_ALIGN(16) IDT_GATE_DESCRIPTOR_64 idt[IDT_NUM_ENTRIES];
+    UINT64  original_idt_base;
+    BOOLEAN initialized;
+} HOST_IDT_STATE, *PHOST_IDT_STATE;
+
 extern VIRTUAL_MACHINE_STATE * g_vcpu;
 extern EPT_STATE *             g_ept;
 extern UINT32                  g_cpu_count;
 extern UINT64                  g_system_cr3;
 extern UINT64 *                g_msr_bitmap_invalid;
+extern HOST_IDT_STATE          g_host_idt;

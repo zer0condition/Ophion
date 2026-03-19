@@ -26,6 +26,13 @@ UINT64  hostcr3_get(VOID);
 VOID    hostcr3_destroy(VOID);
 
 //
+// private host IDT (hostidt.c)
+//
+BOOLEAN hostidt_build(VOID);
+UINT64  hostidt_get_base(VOID);
+VOID    hostidt_destroy(VOID);
+
+//
 // segment helpers (segment.c)
 //
 VOID segment_get_descriptor(PUCHAR gdt_base, UINT16 selector, VMX_SEGMENT_SELECTOR * result);

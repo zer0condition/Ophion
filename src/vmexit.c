@@ -1,7 +1,5 @@
 /*
-*   vmexit.c - vm-exit handler — dispatches exits to sub-handlers
-*   this is called from assembly (asm_vmexit_handler) with:
-*   rcx = pguest_regs (pushed gprs on stack)
+*   vmexit.c - vm-exit handler dispatches exits to sub-handlers
 */
 #include "hv.h"
 
@@ -11,45 +9,57 @@ vmexit_advance_rip(VIRTUAL_MACHINE_STATE * vcpu)
     UINT64 instr_len = 0;
     __vmx_vmread(VMCS_VMEXIT_INSTRUCTION_LENGTH, &instr_len);
 
-    UINT64 new_rip = vcpu->vmexit_rip + instr_len;
+    UINT64 old_rip = vcpu->vmexit_rip;
+    UINT64 new_rip = old_rip + instr_len;
+
+    // 32-bit mode RIP wraparound (KVM optimization)
+    if (((new_rip ^ old_rip) >> 31) == 3)
+    {
+        size_t cs_ar_raw = 0;
+        __vmx_vmread(VMCS_GUEST_CS_ACCESS_RIGHTS, &cs_ar_raw);
+        if (!((cs_ar_raw >> 13) & 1))  // CS.L = 0
+            new_rip = (UINT32)new_rip;
+    }
+
     __vmx_vmwrite(VMCS_GUEST_RIP, new_rip);
 
-    //
-    // merge hardware breakpoint matches into pending debug exceptions.
-    // on bare metal, when TF is set and a hardware BP matches the next
-    // instruction, the CPU delivers #DB with DR6 = BS | Bn | ENABLED_BP.
-    // after a VM-exit (eg. CPUID), the CPU saves the BS bit in the
-    // pending debug field but does NOT check DR0-DR3 — we must do that.
-    //
+    // clear STI/MOV-SS blocking
+    size_t intr_state = 0;
+    __vmx_vmread(VMCS_GUEST_INTERRUPTIBILITY_STATE, &intr_state);
+    if (intr_state & (GUEST_INTR_STATE_BLOCKING_BY_STI | GUEST_INTR_STATE_BLOCKING_BY_MOV_SS))
+    {
+        intr_state &= ~(size_t)(GUEST_INTR_STATE_BLOCKING_BY_STI | GUEST_INTR_STATE_BLOCKING_BY_MOV_SS);
+        __vmx_vmwrite(VMCS_GUEST_INTERRUPTIBILITY_STATE, intr_state);
+    }
+
+    // single-step + hardware breakpoint handling
+    size_t rflags_raw = 0;
+    __vmx_vmread(VMCS_GUEST_RFLAGS, &rflags_raw);
+
     UINT64 pending = 0;
     __vmx_vmread(VMCS_GUEST_PENDING_DEBUG_EXCEPTIONS, &pending);
 
-    if (pending == 0)
-        return;  // fast path: no single-step or debug activity
+    BOOLEAN need_bs = FALSE;
+    if (rflags_raw & RFLAGS_TF)
+    {
+        size_t debugctl_raw = 0;
+        __vmx_vmread(VMCS_GUEST_DEBUGCTL, &debugctl_raw);
+        if (!(debugctl_raw & DEBUGCTL_BTF))
+            need_bs = TRUE;
+    }
 
-    //
-    // read guest DR7 from VMCS (not __readdr(7) which returns host value)
-    //
     UINT64 dr7 = 0;
     __vmx_vmread(VMCS_GUEST_DR7, &dr7);
 
-    //
-    // check each DR0-DR3: enabled (L or G bit) + execution breakpoint (R/W=00)
-    //
     static const UINT64 ln_bits[] = { DR7_L0, DR7_L1, DR7_L2, DR7_L3 };
     static const UINT64 gn_bits[] = { DR7_G0, DR7_G1, DR7_G2, DR7_G3 };
-    static const UINT64 bn_bits[] = { PENDING_DEBUG_B0, PENDING_DEBUG_B1,
-                                      PENDING_DEBUG_B2, PENDING_DEBUG_B3 };
+    static const UINT64 bn_bits[] = { PENDING_DEBUG_B0, PENDING_DEBUG_B1, PENDING_DEBUG_B2, PENDING_DEBUG_B3 };
 
     UINT64 bp_matched = 0;
-
     for (int i = 0; i < 4; i++)
     {
-        // skip if this breakpoint is not enabled (neither local nor global)
         if (!(dr7 & (ln_bits[i] | gn_bits[i])))
             continue;
-
-        // skip if not an execution breakpoint (R/W must be 00)
         if ((dr7 & DR7_RW_MASK(i)) != 0)
             continue;
 
@@ -67,9 +77,12 @@ vmexit_advance_rip(VIRTUAL_MACHINE_STATE * vcpu)
             bp_matched |= bn_bits[i];
     }
 
-    if (bp_matched)
+    if (need_bs || bp_matched)
     {
-        pending |= bp_matched | PENDING_DEBUG_ENABLED_BP;
+        if (need_bs)
+            pending |= PENDING_DEBUG_BS;
+        if (bp_matched)
+            pending |= bp_matched | PENDING_DEBUG_ENABLED_BP;
         __vmx_vmwrite(VMCS_GUEST_PENDING_DEBUG_EXCEPTIONS, pending);
     }
 }
@@ -671,9 +684,7 @@ vmexit_handle_vmcall(VIRTUAL_MACHINE_STATE * vcpu)
         vcpu->vmxoff.guest_rsp = (UINT64)regs->rsp;
 
         //
-        // save guest CR3 before VMXOFF — with USE_PRIVATE_HOST_CR3,
-        // HOST_CR3 is a stale snapshot. Must restore guest CR3
-        // immediately after __vmx_off() or kernel accesses fault.
+        // save guest state before VMXOFF
         //
         UINT64 guest_cr3 = 0;
         __vmx_vmread(VMCS_GUEST_CR3, &guest_cr3);
@@ -682,7 +693,21 @@ vmexit_handle_vmcall(VIRTUAL_MACHINE_STATE * vcpu)
         vcpu->vmxoff.executed = TRUE;
 
         __vmx_off();
+
+        //
+        // restore guest CR3 (host CR3 was our private snapshot)
+        //
         __writecr3(guest_cr3);
+
+        //
+        // restore OS IDT — we were using private host IDT, but now we're
+        // back in normal kernel mode and need the OS exception handlers
+        //
+#if USE_PRIVATE_HOST_IDT
+        if (g_host_idt.initialized)
+            asm_reload_idtr((PVOID)g_host_idt.original_idt_base, IDT_NUM_ENTRIES * sizeof(IDT_GATE_DESCRIPTOR_64) - 1);
+#endif
+
         __writecr4(__readcr4() & ~CR4_VMX_ENABLE_FLAG);
 
         regs->rax = (UINT64)STATUS_SUCCESS;
@@ -703,14 +728,9 @@ vmexit_handle_triple_fault(VIRTUAL_MACHINE_STATE * vcpu)
 }
 
 //
-// MOV DR pass-through — required when MOV-DR exiting is forced on
-// by must-be-1 bits. Without this, DR reads/writes are silently
-// skipped (RIP advanced but DR unchanged), breaking EAC's DR checks.
-//
-// DR0-DR3, DR6: shared between host and guest (no VMCS save/load),
-//   read/write hardware DRs directly.
-// DR7: saved to VMCS_GUEST_DR7 on VM-exit, loaded on VM-entry.
-//   Must use VMCS field, not __writedr(7) (which writes host DR7).
+// MOV DR pass-through when MOV-DR exiting is forced by must-be-1 bits.
+// DR0-DR3, DR6: read/write hardware directly (no VMCS save/load)
+// DR7: use VMCS field, __writedr(7) writes host DR7
 //
 VOID
 vmexit_handle_mov_dr(VIRTUAL_MACHINE_STATE * vcpu)
@@ -1353,6 +1373,21 @@ vmexit_handler(_Inout_ PGUEST_REGS regs, _In_ VIRTUAL_MACHINE_STATE * vcpu)
         }
     }
 
+    // check for NMI that fired while in host mode (via private host IDT)
+#if USE_PRIVATE_HOST_IDT
+    if (!vcpu->vmxoff.executed && _InterlockedExchange(&g_host_nmi_pending[vcpu->core_id], 0))
+    {
+        if (!vcpu->has_pending_nmi)
+        {
+            vcpu->has_pending_nmi = TRUE;
+            size_t proc_ctrl = 0;
+            __vmx_vmread(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, &proc_ctrl);
+            proc_ctrl |= (size_t)CPU_BASED_VM_EXEC_CTRL_NMI_WINDOW_EXITING;
+            __vmx_vmwrite(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, proc_ctrl);
+        }
+    }
+#endif
+
     if (!vcpu->vmxoff.executed && vcpu->advance_rip)
     {
         vmexit_advance_rip(vcpu);
@@ -1368,9 +1403,7 @@ vmexit_handler(_Inout_ PGUEST_REGS regs, _In_ VIRTUAL_MACHINE_STATE * vcpu)
     }
 
     if (vcpu->vmxoff.executed)
-    {
         result = TRUE;
-    }
 
     vcpu->in_root = FALSE;
     return result;

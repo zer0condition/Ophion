@@ -729,6 +729,38 @@ typedef struct _SEGMENT_DESCRIPTOR_32 {
 #pragma pack(pop)
 
 //
+// IDT Gate Descriptor (64-bit long mode)
+//
+// In long mode, interrupt/trap gates are 16 bytes.
+// Type field values:
+//   0xE = 64-bit interrupt gate (IF cleared on entry)
+//   0xF = 64-bit trap gate (IF unchanged)
+//
+#pragma pack(push, 1)
+typedef struct _IDT_GATE_DESCRIPTOR_64 {
+    UINT16 OffsetLow;           // bits 0-15 of handler address
+    UINT16 Selector;            // code segment selector
+    UINT8  Ist : 3;             // interrupt stack table index (0 = legacy stack)
+    UINT8  Reserved0 : 5;
+    UINT8  Type : 4;            // gate type (0xE = interrupt, 0xF = trap)
+    UINT8  Zero : 1;            // must be 0
+    UINT8  Dpl : 2;             // descriptor privilege level
+    UINT8  Present : 1;         // segment present
+    UINT16 OffsetMid;           // bits 16-31 of handler address
+    UINT32 OffsetHigh;          // bits 32-63 of handler address
+    UINT32 Reserved1;           // reserved, must be 0
+} IDT_GATE_DESCRIPTOR_64, *PIDT_GATE_DESCRIPTOR_64;
+#pragma pack(pop)
+
+#define IDT_TYPE_INTERRUPT_GATE     0xE
+#define IDT_TYPE_TRAP_GATE          0xF
+#define IDT_VECTOR_NMI              2
+#define IDT_VECTOR_DF               8
+#define IDT_VECTOR_GP              13
+#define IDT_VECTOR_PF              14
+#define IDT_NUM_ENTRIES           256
+
+//
 // EPT Structures (Intel SDM Vol 3, Chapter 28)
 //
 
@@ -1027,10 +1059,13 @@ typedef union _VMENTRY_INTERRUPT_INFORMATION {
 
 #define PENDING_DEBUG_B0        (1ULL << 0)   // DR0 breakpoint matched
 #define PENDING_DEBUG_B1        (1ULL << 1)   // DR1 breakpoint matched
-#define PENDING_DEBUG_B2        (1ULL << 2)   // DR2 breakpoint matched
-#define PENDING_DEBUG_B3        (1ULL << 3)   // DR3 breakpoint matched
-#define PENDING_DEBUG_ENABLED_BP (1ULL << 12) // At least one enabled BP matched
-#define PENDING_DEBUG_BS        (1ULL << 14)  // Single-step (RFLAGS.TF)
+#define PENDING_DEBUG_B2        (1ULL << 2)
+#define PENDING_DEBUG_B3        (1ULL << 3)
+#define PENDING_DEBUG_ENABLED_BP (1ULL << 12)
+#define PENDING_DEBUG_BS        (1ULL << 14)
+
+#define RFLAGS_TF               (1ULL << 8)
+#define DEBUGCTL_BTF            (1ULL << 1)
 
 //
 // Guest Interruptibility State (VMCS 0x4824 bits)

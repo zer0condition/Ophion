@@ -359,12 +359,22 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
     __vmx_vmwrite(VMCS_GUEST_SYSENTER_ESP, __readmsr(IA32_SYSENTER_ESP));
 
     //
-    // host GDT and IDT — use current OS ones (simplest approach)
+    // Host GDT - use current OS one (kernel GDT is stable)
     //
     segment_get_descriptor((PUCHAR)asm_get_gdt_base(), asm_get_tr(), &seg_sel);
     __vmx_vmwrite(VMCS_HOST_TR_BASE,    seg_sel.Base);
     __vmx_vmwrite(VMCS_HOST_GDTR_BASE,  asm_get_gdt_base());
-    __vmx_vmwrite(VMCS_HOST_IDTR_BASE,  asm_get_idt_base());
+
+    //
+    // private host IDT prevents NMI hijacking (guest corrupts OS IDT vector 2,
+    // triggers NMI while in VMX-root -> attacker code runs in ring 0)
+    //
+#if USE_PRIVATE_HOST_IDT
+    if (g_host_idt.initialized)
+        __vmx_vmwrite(VMCS_HOST_IDTR_BASE, hostidt_get_base());
+    else
+#endif
+        __vmx_vmwrite(VMCS_HOST_IDTR_BASE, asm_get_idt_base());
 
     __vmx_vmwrite(VMCS_HOST_FS_BASE, __readmsr(IA32_FS_BASE));
     __vmx_vmwrite(VMCS_HOST_GS_BASE, __readmsr(IA32_GS_BASE));
@@ -590,6 +600,18 @@ vmx_init(VOID)
     }
 #endif
 
+    //
+    // private host IDT to prevent NMI hijacking. must be built before
+    // broadcast_virtualize_all() so HOST_IDTR points to valid handlers.
+    //
+#if USE_PRIVATE_HOST_IDT
+    if (!hostidt_build())
+    {
+        DbgPrintEx(0, 0, "[hv] Host IDT build failed!\n");
+        return FALSE;
+    }
+#endif
+
     broadcast_virtualize_all();
 
     for (UINT32 i = 0; i < g_cpu_count; i++)
@@ -648,6 +670,10 @@ vmx_terminate(VOID)
 
 #if USE_PRIVATE_HOST_CR3
     hostcr3_destroy();
+#endif
+
+#if USE_PRIVATE_HOST_IDT
+    hostidt_destroy();
 #endif
 
     ExFreePoolWithTag(g_vcpu, HV_POOL_TAG);
