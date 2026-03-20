@@ -720,18 +720,26 @@ vmexit_handle_vmcall(VIRTUAL_MACHINE_STATE * vcpu)
 
         __vmx_off();
 
-        //
-        // restore guest CR3 (host CR3 was our private snapshot)
-        //
         __writecr3(guest_cr3);
 
-        //
-        // restore OS IDT — we were using private host IDT, but now we're
-        // back in normal kernel mode and need the OS exception handlers
-        //
 #if USE_PRIVATE_HOST_IDT
         if (g_host_idt.initialized)
             asm_reload_idtr((PVOID)g_host_idt.original_idt_base, IDT_NUM_ENTRIES * sizeof(IDT_GATE_DESCRIPTOR_64) - 1);
+#endif
+
+#if USE_PRIVATE_HOST_GDT
+        if (vcpu->host_gdt)
+        {
+            //
+            // clear TSS busy bit before LTR, LTR on a busy TSS causes #GP
+            //
+            PSEGMENT_DESCRIPTOR_64 tss_desc = (PSEGMENT_DESCRIPTOR_64)(
+                vcpu->original_gdt_base + (vcpu->original_tr_selector & ~0x7));
+            tss_desc->Type = TSS_TYPE_AVAILABLE_64;
+
+            asm_reload_gdtr((PVOID)vcpu->original_gdt_base, (UINT32)vcpu->original_gdt_limit);
+            asm_reload_tr(vcpu->original_tr_selector);
+        }
 #endif
 
         __writecr4(__readcr4() & ~CR4_VMX_ENABLE_FLAG);

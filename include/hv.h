@@ -33,6 +33,12 @@ UINT64  hostidt_get_base(VOID);
 VOID    hostidt_destroy(VOID);
 
 //
+// per-core private host GDT (hostgdt.c)
+//
+BOOLEAN hostgdt_build_for_vcpu(VIRTUAL_MACHINE_STATE * vcpu);
+VOID    hostgdt_destroy_for_vcpu(VIRTUAL_MACHINE_STATE * vcpu);
+
+//
 // segment helpers (segment.c)
 //
 VOID segment_get_descriptor(PUCHAR gdt_base, UINT16 selector, VMX_SEGMENT_SELECTOR * result);

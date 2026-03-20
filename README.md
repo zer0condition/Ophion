@@ -21,6 +21,7 @@ Intel VT-x Type-2 hypervisor that virtualizes an already running Windows system.
 - **VPID** — Capability-aware INVVPID (prefers type 3 retaining-globals, falls back gracefully).
 - **Private host CR3** — Deep-copied kernel page tables isolate host mode from guest PT corruption. Built after all allocations so VMM stacks and bitmaps are mapped.
 - **Private host IDT** — Isolated IDT for VMX-root mode prevents NMI hijacking (guest corrupts OS IDT, triggers NMI while in host mode). NMIs are flagged and injected to guest on next VM-exit.
+- **Private host GDT** — Per-core isolated GDT for VMX-root mode. Each core has its own TSS, so the private GDT is per-VCPU. On VMXOFF, clears TSS busy bit and reloads original GDTR/TR.
 - **CPUID caching** — Caches bare-metal CPUID at init. Invalid/hypervisor-range leaves return cached native values. Clears ECX[31] on leaf 1.
 - **CR4.VMXE hiding** — Guest CR4 reads/writes go through shadow with VMXE stripped. CR0/CR4 writes enforce VMX fixed bits in actual VMCS.
 - **TSC compensation** — "Trap next RDTSC" after CPUID VM-exit. Returns `cpuid_entry_tsc + bare_metal_cost + offset`. TSC_OFFSET never modified — zero drift.
@@ -52,6 +53,7 @@ Intel VT-x Type-2 hypervisor that virtualizes an already running Windows system.
 | **VPID** | Tag 1 |
 | **HOST_CR3** | Private deep-copied kernel PTs (or system CR3 if disabled) |
 | **HOST_IDTR** | Private IDT with controlled handlers (or system IDT if disabled) |
+| **HOST_GDTR** | Per-core private GDT copy (or system GDT if disabled) |
 
 ***
 
@@ -74,6 +76,7 @@ src/
     broadcast.c         Multi-processor DPC broadcast for virtualize/terminate
     hostcr3.c           Private host page table deep-copy
     hostidt.c           Private host IDT for VMX-root mode
+    hostgdt.c           Per-core private host GDT for VMX-root mode
     stealth.c           CPUID cache init, bare-metal cost calibration, XCR0 validation
     globals.c           Global variable definitions
     util.c              VA/PA translation, GDT/segment helpers
@@ -84,7 +87,7 @@ asm/
     AsmVmxOperation.asm     CR4.VMXE enable, VMCALL with signature
     AsmVmxIntrinsics.asm    INVEPT/INVVPID wrappers
     AsmSegmentRegs.asm      Segment register getters/setters, GDT/IDT
-    AsmCommon.asm           RFLAGS, GDTR/IDTR reload, CR2 write
+    AsmCommon.asm           RFLAGS, GDTR/IDTR/TR reload, CR2 write
     AsmHostIdt.asm          Private host IDT handlers (NMI, #DF, #GP)
 ```
 
@@ -130,6 +133,7 @@ Defined in `include/stealth.h`:
 | `STEALTH_CPUID_CACHING` | 1 | Cache native CPUID responses for invalid/hypervisor leaves |
 | `USE_PRIVATE_HOST_CR3` | 1 | Isolated host page tables (deep-copied kernel PTs) |
 | `USE_PRIVATE_HOST_IDT` | 1 | Isolated host IDT (prevents NMI hijacking in VMX-root) |
+| `USE_PRIVATE_HOST_GDT` | 1 | Per-core isolated host GDT |
 
 ***
 

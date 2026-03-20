@@ -154,6 +154,12 @@ typedef struct _VIRTUAL_MACHINE_STATE {
     // shadowed guest CR8 (TPR) for interrupt priority checks
     UINT8   guest_cr8;
 
+    // per-core private host GDT for VMXOFF restore
+    PVOID   host_gdt;
+    UINT64  original_gdt_base;
+    UINT16  original_gdt_limit;
+    UINT16  original_tr_selector;
+
 } VIRTUAL_MACHINE_STATE, *PVIRTUAL_MACHINE_STATE;
 
 #define VMCALL_TEST             0x00000001

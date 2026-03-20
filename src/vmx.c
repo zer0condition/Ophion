@@ -196,6 +196,15 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
 
     gdt_base = asm_get_gdt_base();
 
+#if USE_PRIVATE_HOST_GDT
+    if (!hostgdt_build_for_vcpu(vcpu))
+        return FALSE;
+#else
+    vcpu->original_gdt_base    = gdt_base;
+    vcpu->original_gdt_limit   = asm_get_gdt_limit();
+    vcpu->original_tr_selector = asm_get_tr();
+#endif
+
     segment_fill_vmcs((PVOID)gdt_base, ES,   asm_get_es());
     segment_fill_vmcs((PVOID)gdt_base, CS,   asm_get_cs());
     segment_fill_vmcs((PVOID)gdt_base, SS,   asm_get_ss());
@@ -235,7 +244,8 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
         CPU_BASED_VM_EXEC_CTRL2_ENABLE_VPID |
         CPU_BASED_VM_EXEC_CTRL2_RDTSCP |
         CPU_BASED_VM_EXEC_CTRL2_ENABLE_INVPCID |
-        CPU_BASED_VM_EXEC_CTRL2_ENABLE_XSAVES,
+        CPU_BASED_VM_EXEC_CTRL2_ENABLE_XSAVES |
+        CPU_BASED_VM_EXEC_CTRL2_ENABLE_USER_WAIT_PAUSE, //  does not gurantee latest versions of windows 11 support yet btw
         IA32_VMX_PROCBASED_CTLS2);
 
     __vmx_vmwrite(VMCS_CTRL_SECONDARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, sec_proc);
@@ -359,12 +369,20 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
     __vmx_vmwrite(VMCS_GUEST_SYSENTER_EIP, __readmsr(IA32_SYSENTER_EIP));
     __vmx_vmwrite(VMCS_GUEST_SYSENTER_ESP, __readmsr(IA32_SYSENTER_ESP));
 
-    //
-    // Host GDT - use current OS one (kernel GDT is stable)
-    //
-    segment_get_descriptor((PUCHAR)asm_get_gdt_base(), asm_get_tr(), &seg_sel);
-    __vmx_vmwrite(VMCS_HOST_TR_BASE,    seg_sel.Base);
-    __vmx_vmwrite(VMCS_HOST_GDTR_BASE,  asm_get_gdt_base());
+#if USE_PRIVATE_HOST_GDT
+    if (vcpu->host_gdt)
+    {
+        segment_get_descriptor((PUCHAR)vcpu->host_gdt, asm_get_tr(), &seg_sel);
+        __vmx_vmwrite(VMCS_HOST_TR_BASE,   seg_sel.Base);
+        __vmx_vmwrite(VMCS_HOST_GDTR_BASE, (UINT64)vcpu->host_gdt);
+    }
+    else
+#endif
+    {
+        segment_get_descriptor((PUCHAR)asm_get_gdt_base(), asm_get_tr(), &seg_sel);
+        __vmx_vmwrite(VMCS_HOST_TR_BASE,   seg_sel.Base);
+        __vmx_vmwrite(VMCS_HOST_GDTR_BASE, asm_get_gdt_base());
+    }
 
     //
     // private host IDT prevents NMI hijacking (guest corrupts OS IDT vector 2,
@@ -675,6 +693,13 @@ vmx_terminate(VOID)
 
 #if USE_PRIVATE_HOST_IDT
     hostidt_destroy();
+#endif
+
+#if USE_PRIVATE_HOST_GDT
+    for (UINT32 i = 0; i < g_cpu_count; i++)
+    {
+        hostgdt_destroy_for_vcpu(&g_vcpu[i]);
+    }
 #endif
 
     ExFreePoolWithTag(g_vcpu, HV_POOL_TAG);

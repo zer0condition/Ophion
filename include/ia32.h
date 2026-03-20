@@ -729,6 +729,37 @@ typedef struct _SEGMENT_DESCRIPTOR_32 {
 #pragma pack(pop)
 
 //
+// 64-bit system segment descriptor (16 bytes for TSS/LDT in long mode)
+//
+#pragma pack(push, 1)
+typedef struct _SEGMENT_DESCRIPTOR_64 {
+    UINT16 LimitLow;
+    UINT16 BaseLow;
+    union {
+        struct {
+            UINT32 BaseMid       : 8;
+            UINT32 Type          : 4;
+            UINT32 System        : 1;
+            UINT32 Dpl           : 2;
+            UINT32 Present       : 1;
+            UINT32 LimitHigh     : 4;
+            UINT32 Avl           : 1;
+            UINT32 Reserved0     : 2;
+            UINT32 Granularity   : 1;
+            UINT32 BaseHigh      : 8;
+        };
+        UINT32 Flags;
+    };
+    UINT32 BaseUpper;
+    UINT32 Reserved1;
+} SEGMENT_DESCRIPTOR_64, *PSEGMENT_DESCRIPTOR_64;
+#pragma pack(pop)
+
+// TSS type field values (64-bit mode)
+#define TSS_TYPE_AVAILABLE_64   0x9
+#define TSS_TYPE_BUSY_64        0xB
+
+//
 // IDT Gate Descriptor (64-bit long mode)
 //
 // In long mode, interrupt/trap gates are 16 bytes.

@@ -52,6 +52,8 @@
 //
 #define USE_PRIVATE_HOST_IDT                1
 
+#define USE_PRIVATE_HOST_GDT                1
+
 //
 // CR4.VMXE — bit 13 (may already be defined in ia32.h)
 //

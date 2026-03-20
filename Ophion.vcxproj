@@ -113,6 +113,7 @@
     <ClCompile Include="src\stealth.c" />
     <ClCompile Include="src\hostcr3.c" />
     <ClCompile Include="src\hostidt.c" />
+    <ClCompile Include="src\hostgdt.c" />
   </ItemGroup>
   <!-- Assembly Files (MASM x64) -->
   <ItemGroup>

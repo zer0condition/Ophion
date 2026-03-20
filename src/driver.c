@@ -47,7 +47,7 @@ DriverEntry(
 
     UNREFERENCED_PARAMETER(registry_path);
 
-    DbgPrintEx(0, 0, "[hv] DriverEntry — Hypervisor initializing...\n");
+    DbgPrintEx(0, 0, "[hv] Ophion initializing...\n");
 
     RtlInitUnicodeString(&device_name, DEVICE_NAME);
     status = IoCreateDevice(

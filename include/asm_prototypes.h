@@ -32,6 +32,7 @@ extern VOID asm_set_fs(UINT16 selector);
 //
 extern VOID asm_reload_gdtr(PVOID gdt_base, UINT32 gdt_limit);
 extern VOID asm_reload_idtr(PVOID idt_base, UINT32 idt_limit);
+extern VOID asm_reload_tr(UINT16 selector);
 extern VOID asm_write_cr2(UINT64 value);
 
 //
