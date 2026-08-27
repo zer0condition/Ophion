@@ -13,6 +13,26 @@ VOID
 stealth_init_cpuid_cache(VOID)
 {
     INT32 cpu_info[4] = {0};
+    __cpuidex(cpu_info, CPUID_PROCESSOR_FEATURES, 0);
+    g_stealth_cpuid_cache.parent_hypervisor_present =
+        ((UINT32)cpu_info[2] & HYPERV_HYPERVISOR_PRESENT_BIT) != 0;
+
+    if (g_stealth_cpuid_cache.parent_hypervisor_present)
+    {
+        __cpuidex(cpu_info, 0x40000000, 0);
+        if ((UINT32)cpu_info[1] == 0x7263694D &&
+            (UINT32)cpu_info[2] == 0x666F736F &&
+            (UINT32)cpu_info[3] == 0x76482074)
+        {
+            g_stealth_cpuid_cache.parent_is_hyperv = TRUE;
+            if ((UINT32)cpu_info[0] >= 0x40000003)
+            {
+                __cpuidex(cpu_info, 0x40000003, 0);
+                g_stealth_cpuid_cache.parent_hyperv_features =
+                    (UINT32)cpu_info[0];
+            }
+        }
+    }
 
     //
     // cache the response for an obviously invalid leaf.
@@ -71,6 +91,8 @@ stealth_init_cpuid_cache(VOID)
         }
 
         g_stealth_cpuid_cache.bare_metal_cpuid_cost = best;
+        g_stealth_cpuid_cache.bare_metal_fyl2xp1_cost = 0;
+
     }
 
     //
@@ -94,8 +116,9 @@ stealth_init_cpuid_cache(VOID)
     }
 #endif
 
-    DbgPrintEx(0, 0, "[hv] Stealth CPUID cache: MaxStd=0x%X, MaxExt=0x%X, XCR0=0x%llX, "
+    HV_LOG(0, 0, "[hv] Stealth CPUID cache: ParentHV=%d, MaxStd=0x%X, MaxExt=0x%X, XCR0=0x%llX, "
              "InvalidLeaf={0x%X, 0x%X, 0x%X, 0x%X}\n",
+             g_stealth_cpuid_cache.parent_hypervisor_present,
              g_stealth_cpuid_cache.max_std_leaf,
              g_stealth_cpuid_cache.max_ext_leaf,
              g_stealth_cpuid_cache.valid_xcr0_mask,
@@ -105,7 +128,7 @@ stealth_init_cpuid_cache(VOID)
              (UINT32)g_stealth_cpuid_cache.invalid_leaf[3]);
 
 #if STEALTH_COMPENSATE_TIMING
-    DbgPrintEx(0, 0, "[hv] TSC compensation: bare_metal_cpuid=%llu cycles, rdtsc_exiting_forced=%d\n",
+    HV_LOG(0, 0, "[hv] TSC compensation: bare_metal_cpuid=%llu cycles, rdtsc_exiting_forced=%d\n",
              g_stealth_cpuid_cache.bare_metal_cpuid_cost,
              g_stealth_cpuid_cache.rdtsc_exiting_forced);
 #endif

@@ -5,17 +5,249 @@
 */
 #include "hv.h"
 
-/*
-*   get current processor id without windows apis
-*   ia32_tsc_aux (0xc0000103) is set by the os to the processor number
-*   safe to call in vmx-root mode. lower 12 bits = processor number
-*/
-static __forceinline UINT32
-vmx_get_cpu_id(VOID)
+UINT32
+vmx_topology_index(const PROCESSOR_NUMBER * processor)
 {
-    return (UINT32)(__readmsr(IA32_TSC_AUX) & 0xFFF);
+    if (!processor)
+        return MAX_PROCESSORS;
+
+    for (UINT32 i = 0; i < g_cpu_count; i++)
+    {
+        if (g_processor_topology[i].Processor.Group == processor->Group &&
+            g_processor_topology[i].Processor.Number == processor->Number)
+            return g_processor_topology[i].Index;
+    }
+    return MAX_PROCESSORS;
 }
 
+BOOLEAN
+vmx_build_topology(VOID)
+{
+    ULONG count = KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+
+    if (!count || count > MAX_PROCESSORS)
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_PROCESSOR_CAPACITY;
+        return FALSE;
+    }
+
+    RtlZeroMemory(g_processor_topology, sizeof(g_processor_topology));
+    g_cpu_count = count;
+    for (ULONG i = 0; i < count; i++)
+    {
+        if (!NT_SUCCESS(KeGetProcessorNumberFromIndex(
+                i, &g_processor_topology[i].Processor)))
+        {
+            g_hv_capabilities.Failure = HV_FAILURE_PROCESSOR_CAPACITY;
+            g_cpu_count = 0;
+            return FALSE;
+        }
+        g_processor_topology[i].Index = i;
+    }
+    g_hv_capabilities.CpuCount = count;
+    return TRUE;
+}
+
+BOOLEAN
+vmx_preflight(VOID)
+{
+    CPUID data = {0};
+    INT32 cpu_info[4] = {0};
+    IA32_VMX_BASIC_REGISTER vmx_basic = {0};
+    IA32_VMX_EPT_VPID_CAP_REGISTER ept_vpid = {0};
+    MSR primary = {0};
+    MSR secondary = {0};
+    PPHYSICAL_MEMORY_RANGE ranges;
+
+    RtlZeroMemory(&g_hv_capabilities, sizeof(g_hv_capabilities));
+    if (!vmx_build_topology())
+        return FALSE;
+
+    __cpuid((int *)&data, CPUID_PROCESSOR_FEATURES);
+    if (data.ecx & HYPERV_HYPERVISOR_PRESENT_BIT)
+    {
+        g_hv_capabilities.ParentFlags |= HV_PARENT_PRESENT;
+        __cpuidex(cpu_info, 0x40000000, 0);
+        RtlCopyMemory(&g_hv_capabilities.ParentVendor[0], &cpu_info[1], 12);
+        if ((UINT32)cpu_info[1] == 0x7263694D &&
+            (UINT32)cpu_info[2] == 0x666F736F &&
+            (UINT32)cpu_info[3] == 0x76482074)
+        {
+            g_hv_capabilities.ParentFlags |= HV_PARENT_HYPERV;
+            if ((UINT32)cpu_info[0] >= 0x40000003)
+            {
+                __cpuidex(cpu_info, 0x40000003, 0);
+                g_hv_capabilities.ParentFeatures = (UINT32)cpu_info[0];
+            }
+        }
+#if !OPHION_ALLOW_NESTED
+        g_hv_capabilities.ParentFlags |= HV_PARENT_NESTED_RESTRICTED;
+        g_hv_capabilities.Failure = HV_FAILURE_NESTED_RESTRICTION;
+        return FALSE;
+#endif
+    }
+
+    if (!(data.ecx & (1U << CPUID_VMX_BIT)) ||
+        !vmx_check_support())
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_VMX_UNAVAILABLE;
+        return FALSE;
+    }
+
+    __cpuidex(cpu_info, (INT32)0x80000000, 0);
+    if ((UINT32)cpu_info[0] >= 0x80000008)
+    {
+        __cpuidex(cpu_info, (INT32)0x80000008, 0);
+        g_hv_capabilities.PhysicalAddressBits = (UINT32)cpu_info[0] & 0xFF;
+    }
+
+    ranges = MmGetPhysicalMemoryRanges();
+    if (!ranges)
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_GPA_COVERAGE;
+        return FALSE;
+    }
+    for (PPHYSICAL_MEMORY_RANGE range = ranges; range->NumberOfBytes.QuadPart; range++)
+    {
+        UINT64 end = (UINT64)range->BaseAddress.QuadPart +
+                     (UINT64)range->NumberOfBytes.QuadPart;
+        if (end > g_hv_capabilities.MaximumGuestPhysicalAddress)
+            g_hv_capabilities.MaximumGuestPhysicalAddress = end;
+    }
+    ExFreePool(ranges);
+
+    if (g_hv_capabilities.MaximumGuestPhysicalAddress >
+        (1ULL << 39))
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_GPA_COVERAGE;
+        return FALSE;
+    }
+
+    vmx_basic.AsUInt = __readmsr(IA32_VMX_BASIC);
+    primary.Flags = __readmsr(vmx_basic.VmxControls
+        ? IA32_VMX_TRUE_PROCBASED_CTLS
+        : IA32_VMX_PROCBASED_CTLS);
+    secondary.Flags = __readmsr(IA32_VMX_PROCBASED_CTLS2);
+    ept_vpid.AsUInt = __readmsr(IA32_VMX_EPT_VPID_CAP);
+
+    if (!(primary.Fields.High &
+          CPU_BASED_VM_EXEC_CTRL_ACTIVATE_SECONDARY_CONTROLS) ||
+        !(secondary.Fields.High & CPU_BASED_VM_EXEC_CTRL2_ENABLE_EPT))
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_REQUIRED_CONTROLS;
+        if (g_hv_capabilities.ParentFlags & HV_PARENT_PRESENT)
+            g_hv_capabilities.ParentFlags |= HV_PARENT_NESTED_RESTRICTED;
+        return FALSE;
+    }
+    if (!ept_vpid.PageWalkLength4 || !ept_vpid.MemoryTypeWriteBack ||
+        !ept_vpid.Pde2MbPages)
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_EPT_UNAVAILABLE;
+        if (g_hv_capabilities.ParentFlags & HV_PARENT_PRESENT)
+            g_hv_capabilities.ParentFlags |= HV_PARENT_NESTED_RESTRICTED;
+        return FALSE;
+    }
+
+    g_hv_capabilities.CapabilityFlags =
+        HV_CAP_EPT | HV_CAP_EPT_2MB;
+    if (ept_vpid.EptAccessedAndDirtyFlags)
+        g_hv_capabilities.CapabilityFlags |= HV_CAP_EPT_AD;
+    if (primary.Fields.High & CPU_BASED_VM_EXEC_CTRL_MONITOR_TRAP_FLAG)
+        g_hv_capabilities.CapabilityFlags |= HV_CAP_MTF;
+    if (ept_vpid.Invvpid)
+        g_hv_capabilities.CapabilityFlags |= HV_CAP_INVVPID;
+    __cpuidex(cpu_info, 7, 0);
+    if (((UINT32)cpu_info[2] & (1U << 5)) &&
+        (secondary.Fields.High &
+         CPU_BASED_VM_EXEC_CTRL2_ENABLE_USER_WAIT_PAUSE))
+        g_hv_capabilities.CapabilityFlags |= HV_CAP_WAITPKG;
+    __cpuidex(cpu_info, 0x0A, 0);
+    if ((cpu_info[0] & 0xFF) != 0)
+        g_hv_capabilities.CapabilityFlags |= HV_CAP_PMU;
+
+    return TRUE;
+}
+
+BOOLEAN
+vmx_vmread_checked(
+    VIRTUAL_MACHINE_STATE * vcpu,
+    SIZE_T field,
+    UINT64 * value)
+{
+    if (__vmx_vmread(field, value) == 0)
+        return TRUE;
+    if (vcpu)
+    {
+        UINT64 error = 0;
+        vcpu->failed = TRUE;
+        vcpu->last_failure = HV_FAILURE_VMCS_READ;
+        if (__vmx_vmread(VMCS_VM_INSTRUCTION_ERROR, &error) == 0)
+            vcpu->last_vm_instruction_error = (UINT32)error;
+    }
+    return FALSE;
+}
+
+BOOLEAN
+vmx_vmwrite_checked(
+    VIRTUAL_MACHINE_STATE * vcpu,
+    SIZE_T field,
+    UINT64 value)
+{
+    if (__vmx_vmwrite(field, value) == 0)
+        return TRUE;
+    if (vcpu)
+    {
+        UINT64 error = 0;
+        vcpu->failed = TRUE;
+        vcpu->last_failure = HV_FAILURE_VMCS_WRITE;
+        if (__vmx_vmread(VMCS_VM_INSTRUCTION_ERROR, &error) == 0)
+            vcpu->last_vm_instruction_error = (UINT32)error;
+    }
+    return FALSE;
+}
+
+VOID
+vmx_mark_host_nmi_pending(VIRTUAL_MACHINE_STATE * vcpu)
+{
+    if (vcpu)
+        InterlockedExchange(&vcpu->host_nmi_pending, 1);
+}
+
+
+static VOID
+vmx_calibrate_cpuid(VIRTUAL_MACHINE_STATE * vcpu)
+{
+    static const UINT32 leaves[HvCpuidLeafClassCount] = {
+        0, 7, 0x80000000U
+    };
+    INT32 cpu_info[4];
+
+    for (UINT32 leaf_class = 0;
+         leaf_class < HvCpuidLeafClassCount;
+         leaf_class++)
+    {
+        UINT64 minimum = MAXULONG64;
+        UINT64 maximum = 0;
+
+        for (UINT32 sample = 0; sample < 32; sample++)
+        {
+            UINT32 aux;
+            UINT64 start = __rdtsc();
+            __cpuidex(cpu_info, (INT32)leaves[leaf_class], 0);
+            UINT64 elapsed = __rdtscp(&aux) - start;
+            if (elapsed < minimum)
+                minimum = elapsed;
+            if (elapsed > maximum)
+                maximum = elapsed;
+        }
+
+        vcpu->cpuid_cost[leaf_class] = minimum;
+        vcpu->cpuid_jitter[leaf_class] =
+            maximum > minimum ? maximum - minimum : 0;
+        if (vcpu->cpuid_jitter[leaf_class] > minimum / 4)
+            vcpu->cpuid_jitter[leaf_class] = minimum / 4;
+    }
+}
 BOOLEAN
 vmx_check_support(VOID)
 {
@@ -144,12 +376,7 @@ vmx_alloc_vmcs(VIRTUAL_MACHINE_STATE * vcpu)
 BOOLEAN
 vmx_clear_vmcs(VIRTUAL_MACHINE_STATE * vcpu)
 {
-    if (__vmx_vmclear(&vcpu->vmcs_pa))
-    {
-        __vmx_off();
-        return FALSE;
-    }
-    return TRUE;
+    return __vmx_vmclear(&vcpu->vmcs_pa) == 0;
 }
 
 BOOLEAN
@@ -160,16 +387,50 @@ vmx_load_vmcs(VIRTUAL_MACHINE_STATE * vcpu)
     return TRUE;
 }
 
+#define __vmx_vmwrite(Field, Value) \
+    vmx_vmwrite_checked(vcpu, (Field), (UINT64)(Value))
+
 BOOLEAN
 vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
 {
     UINT32                  pri_proc;
     UINT32                  sec_proc;
+    UINT32                  pin_ctrl;
+    UINT32                  exit_ctrl;
+    UINT32                  entry_ctrl;
     UINT64                  gdt_base;
-    IA32_VMX_BASIC_REGISTER vmx_basic     = {0};
+    INT32                   cpu_info[4] = {0};
+    IA32_VMX_BASIC_REGISTER vmx_basic = {0};
     VMX_SEGMENT_SELECTOR    seg_sel = {0};
 
     vmx_basic.AsUInt = __readmsr(IA32_VMX_BASIC);
+#if STEALTH_VIRTUALIZE_PMU
+    __cpuidex(cpu_info, 0x0A, 0);
+    vcpu->pmu_version = (UINT8)(cpu_info[0] & 0xFF);
+    if (vcpu->pmu_version)
+    {
+        UINT64 valid_global_mask;
+
+        vcpu->pmu_gp_count = (UINT8)((cpu_info[0] >> 8) & 0xFF);
+        vcpu->pmu_gp_width = (UINT8)((cpu_info[0] >> 16) & 0xFF);
+        vcpu->pmu_fixed_bitmap = (UINT32)cpu_info[2];
+        vcpu->pmu_fixed_count = (UINT8)(cpu_info[3] & 0x1F);
+        vcpu->pmu_fixed_width = (UINT8)((cpu_info[3] >> 5) & 0xFF);
+
+        valid_global_mask = vcpu->pmu_gp_count >= 32
+            ? 0xFFFFFFFFULL
+            : ((1ULL << vcpu->pmu_gp_count) - 1);
+        valid_global_mask |= ((vcpu->pmu_fixed_count >= 32
+            ? 0xFFFFFFFFULL
+            : ((1ULL << vcpu->pmu_fixed_count) - 1)) |
+            vcpu->pmu_fixed_bitmap) << 32;
+        vcpu->perf_global_ctrl =
+            __readmsr(IA32_PERF_GLOBAL_CTRL) & valid_global_mask;
+    }
+
+    __cpuidex(cpu_info, 6, 0);
+    vcpu->aperf_mperf_supported = ((UINT32)cpu_info[2] & 1U) != 0;
+#endif
 
     //
     // mask RPL and TI bits (bits 0-2) per Intel SDM
@@ -205,20 +466,23 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
     vcpu->original_tr_selector = asm_get_tr();
 #endif
 
-    segment_fill_vmcs((PVOID)gdt_base, ES,   asm_get_es());
-    segment_fill_vmcs((PVOID)gdt_base, CS,   asm_get_cs());
-    segment_fill_vmcs((PVOID)gdt_base, SS,   asm_get_ss());
-    segment_fill_vmcs((PVOID)gdt_base, DS,   asm_get_ds());
-    segment_fill_vmcs((PVOID)gdt_base, FS,   asm_get_fs());
-    segment_fill_vmcs((PVOID)gdt_base, GS,   asm_get_gs());
-    segment_fill_vmcs((PVOID)gdt_base, LDTR, asm_get_ldtr());
-    segment_fill_vmcs((PVOID)gdt_base, TR,   asm_get_tr());
+    if (!segment_fill_vmcs(vcpu, (PVOID)gdt_base, ES, asm_get_es()) ||
+        !segment_fill_vmcs(vcpu, (PVOID)gdt_base, CS, asm_get_cs()) ||
+        !segment_fill_vmcs(vcpu, (PVOID)gdt_base, SS, asm_get_ss()) ||
+        !segment_fill_vmcs(vcpu, (PVOID)gdt_base, DS, asm_get_ds()) ||
+        !segment_fill_vmcs(vcpu, (PVOID)gdt_base, FS, asm_get_fs()) ||
+        !segment_fill_vmcs(vcpu, (PVOID)gdt_base, GS, asm_get_gs()) ||
+        !segment_fill_vmcs(vcpu, (PVOID)gdt_base, LDTR, asm_get_ldtr()) ||
+        !segment_fill_vmcs(vcpu, (PVOID)gdt_base, TR, asm_get_tr()))
+        return FALSE;
 
     __vmx_vmwrite(VMCS_GUEST_FS_BASE, __readmsr(IA32_FS_BASE));
     __vmx_vmwrite(VMCS_GUEST_GS_BASE, __readmsr(IA32_GS_BASE));
 
     pri_proc = vmx_adjust_controls(
         CPU_BASED_VM_EXEC_CTRL_USE_TSC_OFFSETTING |
+        (STEALTH_VIRTUALIZE_PMU
+            ? CPU_BASED_VM_EXEC_CTRL_RDPMC_EXITING : 0) |
         CPU_BASED_VM_EXEC_CTRL_USE_MSR_BITMAPS |
         CPU_BASED_VM_EXEC_CTRL_USE_IO_BITMAPS |
         CPU_BASED_VM_EXEC_CTRL_ACTIVATE_SECONDARY_CONTROLS,
@@ -226,10 +490,14 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
 
     __vmx_vmwrite(VMCS_CTRL_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, pri_proc);
 
+    vcpu->primary_dynamic_forced =
+        pri_proc &
+        (CPU_BASED_VM_EXEC_CTRL_CR3_LOAD_EXITING |
+         CPU_BASED_VM_EXEC_CTRL_RDTSC_EXITING);
     vcpu->mov_dr_exiting = !!(pri_proc & CPU_BASED_VM_EXEC_CTRL_MOV_DR_EXITING);
     vcpu->guest_cr8 = (UINT8)__readcr8();
 
-    DbgPrintEx(0, 0, "[hv] Primary proc controls: 0x%08X (CR3load=%d CR3store=%d INVLPG=%d HLT=%d RDTSC=%d MOVDR=%d TSCoff=%d)\n",
+    HV_LOG(0, 0, "[hv] Primary proc controls: 0x%08X (CR3load=%d CR3store=%d INVLPG=%d HLT=%d RDTSC=%d MOVDR=%d TSCoff=%d)\n",
              pri_proc,
              !!(pri_proc & CPU_BASED_VM_EXEC_CTRL_CR3_LOAD_EXITING),
              !!(pri_proc & CPU_BASED_VM_EXEC_CTRL_CR3_STORE_EXITING),
@@ -239,35 +507,40 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
              !!(pri_proc & CPU_BASED_VM_EXEC_CTRL_MOV_DR_EXITING),
              !!(pri_proc & CPU_BASED_VM_EXEC_CTRL_USE_TSC_OFFSETTING));
 
+    __cpuidex(cpu_info, 7, 0);
     sec_proc = vmx_adjust_controls(
         CPU_BASED_VM_EXEC_CTRL2_ENABLE_EPT |
         CPU_BASED_VM_EXEC_CTRL2_ENABLE_VPID |
         CPU_BASED_VM_EXEC_CTRL2_RDTSCP |
         CPU_BASED_VM_EXEC_CTRL2_ENABLE_INVPCID |
         CPU_BASED_VM_EXEC_CTRL2_ENABLE_XSAVES |
-        CPU_BASED_VM_EXEC_CTRL2_ENABLE_USER_WAIT_PAUSE, //  does not gurantee latest versions of windows 11 support yet btw
+        (((UINT32)cpu_info[2] & (1U << 5))
+            ? CPU_BASED_VM_EXEC_CTRL2_ENABLE_USER_WAIT_PAUSE : 0),
         IA32_VMX_PROCBASED_CTLS2);
-
+    if (!(sec_proc & CPU_BASED_VM_EXEC_CTRL2_ENABLE_EPT))
+        return FALSE;
+    vcpu->vpid_enabled =
+        (sec_proc & CPU_BASED_VM_EXEC_CTRL2_ENABLE_VPID) != 0;
+    if (vcpu->vpid_enabled &&
+        (!g_ept->invvpid_supported ||
+         !g_ept->invvpid_single_context))
+        return FALSE;
+    vcpu->waitpkg_enabled =
+        ((sec_proc & CPU_BASED_VM_EXEC_CTRL2_ENABLE_USER_WAIT_PAUSE) != 0);
     __vmx_vmwrite(VMCS_CTRL_SECONDARY_PROCESSOR_BASED_VM_EXECUTION_CONTROLS, sec_proc);
 
-    UINT32 pin_ctrl = vmx_adjust_controls(
+    pin_ctrl = vmx_adjust_controls(
         PIN_BASED_VM_EXEC_CTRL_NMI_EXITING |
         PIN_BASED_VM_EXEC_CTRL_VIRTUAL_NMI,
-        vmx_basic.VmxControls ? IA32_VMX_TRUE_PINBASED_CTLS : IA32_VMX_PINBASED_CTLS);
-
-    //
-    // SDM: "virtual NMIs" requires "NMI exiting" — some nested VMX
-    // implementations (Hyper-V) don't advertise NMI exiting in the
-    // capability MSR's allowed-1 set despite supporting it.
-    // Force the constraint; if truly unsupported, VMLAUNCH will fail
-    // with a clear error rather than the cryptic VirtNMI-without-NMI.
-    //
-    if (pin_ctrl & PIN_BASED_VM_EXEC_CTRL_VIRTUAL_NMI)
-        pin_ctrl |= PIN_BASED_VM_EXEC_CTRL_NMI_EXITING;
-
+        vmx_basic.VmxControls
+            ? IA32_VMX_TRUE_PINBASED_CTLS
+            : IA32_VMX_PINBASED_CTLS);
+    if (!(pin_ctrl & PIN_BASED_VM_EXEC_CTRL_NMI_EXITING) ||
+        !(pin_ctrl & PIN_BASED_VM_EXEC_CTRL_VIRTUAL_NMI))
+        return FALSE;
     __vmx_vmwrite(VMCS_CTRL_PIN_BASED_VM_EXECUTION_CONTROLS, pin_ctrl);
 
-    DbgPrintEx(0, 0, "[hv] Pin controls: 0x%08X (ExtInt=%d NMI=%d VirtNMI=%d Preempt=%d)\n",
+    HV_LOG(0, 0, "[hv] Pin controls: 0x%08X (ExtInt=%d NMI=%d VirtNMI=%d Preempt=%d)\n",
              pin_ctrl,
              !!(pin_ctrl & PIN_BASED_VM_EXEC_CTRL_EXTERNAL_INTERRUPT_EXITING),
              !!(pin_ctrl & PIN_BASED_VM_EXEC_CTRL_NMI_EXITING),
@@ -285,26 +558,50 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
     // VMCS_VMEXIT_INTERRUPTION_INFORMATION. without this, pending interrupts
     // cause an infinite vm-exit loop -> TDR -> black blink
     //
-    UINT32 exit_ctrl = vmx_adjust_controls(
+    exit_ctrl = vmx_adjust_controls(
         VM_EXIT_CTRL_HOST_ADDRESS_SPACE_SIZE |
         VM_EXIT_CTRL_SAVE_DEBUG_CONTROLS |
-        VM_EXIT_CTRL_ACK_INTERRUPT_ON_EXIT,
+        ((pin_ctrl & PIN_BASED_VM_EXEC_CTRL_EXTERNAL_INTERRUPT_EXITING)
+            ? VM_EXIT_CTRL_ACK_INTERRUPT_ON_EXIT
+            : 0) |
+        (vcpu->pmu_gp_count
+            ? VM_EXIT_CTRL_LOAD_IA32_PERF_GLOBAL_CTRL |
+              VM_EXIT_CTRL_SAVE_IA32_PERF_GLOBAL_CTRL
+            : 0),
         vmx_basic.VmxControls ? IA32_VMX_TRUE_EXIT_CTLS : IA32_VMX_EXIT_CTLS);
 
     __vmx_vmwrite(VMCS_CTRL_PRIMARY_VMEXIT_CONTROLS, exit_ctrl);
 
-    DbgPrintEx(0, 0, "[hv] Exit controls: 0x%08X (AckInt=%d)\n",
+    HV_LOG(0, 0, "[hv] Exit controls: 0x%08X (AckInt=%d)\n",
              exit_ctrl, !!(exit_ctrl & VM_EXIT_CTRL_ACK_INTERRUPT_ON_EXIT));
 
     //
     // IA-32e mode guest, load debug controls
     // required so guest sees its own DR7 after VM-exit/entry cycle
     //
-    __vmx_vmwrite(VMCS_CTRL_VMENTRY_CONTROLS,
-                  vmx_adjust_controls(
-                      VM_ENTRY_CTRL_IA32E_MODE_GUEST |
-                      VM_ENTRY_CTRL_LOAD_DEBUG_CONTROLS,
-                      vmx_basic.VmxControls ? IA32_VMX_TRUE_ENTRY_CTLS : IA32_VMX_ENTRY_CTLS));
+    entry_ctrl = vmx_adjust_controls(
+        VM_ENTRY_CTRL_IA32E_MODE_GUEST |
+        VM_ENTRY_CTRL_LOAD_DEBUG_CONTROLS |
+        (vcpu->pmu_gp_count ? VM_ENTRY_CTRL_LOAD_IA32_PERF_GLOBAL_CTRL : 0),
+        vmx_basic.VmxControls ? IA32_VMX_TRUE_ENTRY_CTLS : IA32_VMX_ENTRY_CTLS);
+    __vmx_vmwrite(VMCS_CTRL_VMENTRY_CONTROLS, entry_ctrl);
+
+    vcpu->pmu_isolated =
+        vcpu->pmu_gp_count &&
+        (exit_ctrl & VM_EXIT_CTRL_LOAD_IA32_PERF_GLOBAL_CTRL) &&
+        (entry_ctrl & VM_ENTRY_CTRL_LOAD_IA32_PERF_GLOBAL_CTRL);
+    if (vcpu->pmu_isolated)
+    {
+        __vmx_vmwrite(VMCS_GUEST_PERF_GLOBAL_CTRL, vcpu->perf_global_ctrl);
+        __vmx_vmwrite(VMCS_HOST_PERF_GLOBAL_CTRL, 0);
+    }
+#if STEALTH_VIRTUALIZE_PMU
+    if (vcpu->pmu_version && !vcpu->pmu_isolated)
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_REQUIRED_CONTROLS;
+        return FALSE;
+    }
+#endif
 
     //
     // CR0: 0 = don't cause VM-exit on CR0 modifications (pass-through)
@@ -356,7 +653,7 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
 #if USE_PRIVATE_HOST_CR3
     __vmx_vmwrite(VMCS_HOST_CR3, hostcr3_get());
 #else
-    __vmx_vmwrite(VMCS_HOST_CR3, get_system_cr3());
+    __vmx_vmwrite(VMCS_HOST_CR3, g_system_cr3 ? g_system_cr3 : __readcr3());
 #endif
 
     __vmx_vmwrite(VMCS_GUEST_GDTR_BASE,  asm_get_gdt_base());
@@ -431,8 +728,12 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
     __vmx_vmwrite(VMCS_HOST_RSP, (UINT64)vcpu->vmm_stack + VMM_STACK_SIZE - 16);
     __vmx_vmwrite(VMCS_HOST_RIP, (UINT64)asm_vmexit_handler);
 
+    if (vcpu->failed)
+        return FALSE;
+
     return TRUE;
 }
+#undef __vmx_vmwrite
 
 /*
 *   called per-core via dpc — sets up vmx, enters vmx operation, launches
@@ -442,41 +743,66 @@ vmx_setup_vmcs(VIRTUAL_MACHINE_STATE * vcpu, PVOID guest_stack)
 BOOLEAN
 vmx_virtualize_cpu(PVOID guest_stack)
 {
-    ULONG                   core = KeGetCurrentProcessorNumberEx(NULL);
-    VIRTUAL_MACHINE_STATE * vcpu        = &g_vcpu[core];
-    UINT64                  error_code   = 0;
+    PROCESSOR_NUMBER processor;
+    UINT32 core;
+    VIRTUAL_MACHINE_STATE * vcpu;
+    UINT64 error_code = 0;
 
+    KeGetCurrentProcessorNumberEx(&processor);
+    core = vmx_topology_index(&processor);
+    if (!g_vcpu || core >= g_cpu_count)
+        return FALSE;
+    vcpu = &g_vcpu[core];
     vcpu->core_id = core;
+    vmx_calibrate_cpuid(vcpu);
+    vcpu->original_cr0 = __readcr0();
+    vcpu->original_cr4 = __readcr4();
+
 
     asm_enable_vmx();
     vmx_set_fixed_bits();
 
     if (__vmx_on(&vcpu->vmxon_pa))
     {
-        DbgPrintEx(0, 0, "[hv] VMXON failed on core %u\n", core);
+        vcpu->failed = TRUE;
+        vcpu->last_failure = HV_FAILURE_VM_ENTRY;
+        __writecr0(vcpu->original_cr0);
+        __writecr4(vcpu->original_cr4 & ~CR4_VMX_ENABLE_FLAG);
+        HV_LOG(0, 0, "[hv] VMXON failed on core %u\n", core);
+        return FALSE;
+    }
+    vcpu->vmxon_active = TRUE;
+
+    if (!vmx_clear_vmcs(vcpu) ||
+        !vmx_load_vmcs(vcpu) ||
+        !vmx_setup_vmcs(vcpu, guest_stack))
+    {
+        vcpu->failed = TRUE;
+        if (!vcpu->last_failure)
+            vcpu->last_failure = HV_FAILURE_VMCS_WRITE;
+        if (asm_vmxoff_checked() == 0)
+        {
+            __writecr0(vcpu->original_cr0);
+            __writecr4(vcpu->original_cr4 & ~CR4_VMX_ENABLE_FLAG);
+        }
         return FALSE;
     }
 
-    if (!vmx_clear_vmcs(vcpu))
-        return FALSE;
-
-    if (!vmx_load_vmcs(vcpu))
-        return FALSE;
-
-    vmx_setup_vmcs(vcpu, guest_stack);
-
     vcpu->launched = TRUE;
-
     __vmx_vmlaunch();
 
-    //
-    // if we reach here, VMLAUNCH failed
-    //
     vcpu->launched = FALSE;
-    __vmx_vmread(VMCS_VM_INSTRUCTION_ERROR, &error_code);
-    __vmx_off();
+    vcpu->failed = TRUE;
+    vcpu->last_failure = HV_FAILURE_VM_ENTRY;
+    if (__vmx_vmread(VMCS_VM_INSTRUCTION_ERROR, &error_code) == 0)
+        vcpu->last_vm_instruction_error = (UINT32)error_code;
+    if (asm_vmxoff_checked() == 0)
+    {
+        __writecr0(vcpu->original_cr0);
+        __writecr4(vcpu->original_cr4 & ~CR4_VMX_ENABLE_FLAG);
+    }
 
-    DbgPrintEx(0, 0, "[hv] VMLAUNCH failed on core %u, error: 0x%llx\n", core, error_code);
+    HV_LOG(0, 0, "[hv] VMLAUNCH failed on core %u, error: 0x%llx\n", core, error_code);
     return FALSE;
 }
 
@@ -490,42 +816,50 @@ vmx_vmresume(VOID)
     //
     UINT64 error_code = 0;
     __vmx_vmread(VMCS_VM_INSTRUCTION_ERROR, &error_code);
-    __vmx_off();
-
-    DbgPrintEx(0, 0, "[hv] VMRESUME failed! Error: 0x%llx\n", error_code);
+    if (asm_vmxoff_checked() == 0)
+        __writecr4(__readcr4() & ~CR4_VMX_ENABLE_FLAG);
+    HV_LOG(0, 0, "[hv] VMRESUME failed! Error: 0x%llx\n", error_code);
+    __debugbreak();
+    for (;;)
+        __halt();
 }
 
 BOOLEAN
 vmx_init(VOID)
 {
-    g_cpu_count = KeQueryActiveProcessorCount(0);
+    if (!vmx_preflight())
+    {
+        HV_LOG(0, 0, "[hv] VMX preflight failed: %u\n",
+                   g_hv_capabilities.Failure);
+        return FALSE;
+    }
+
+#if STEALTH_CPUID_CACHING
+    stealth_init_cpuid_cache();
+#endif
 
     g_vcpu = (VIRTUAL_MACHINE_STATE *)ExAllocatePool2(
         POOL_FLAG_NON_PAGED, sizeof(VIRTUAL_MACHINE_STATE) * g_cpu_count, HV_POOL_TAG);
 
     if (!g_vcpu)
-        return FALSE;
-
-    RtlZeroMemory(g_vcpu, sizeof(VIRTUAL_MACHINE_STATE) * g_cpu_count);
-
-    if (!vmx_check_support())
     {
-        DbgPrintEx(0, 0, "[hv] VMX not supported!\n");
+        g_hv_capabilities.Failure = HV_FAILURE_ALLOCATION;
         return FALSE;
     }
 
-    //
-    // initialize stealth CPUID cache — MUST be before VMXON
-    // this captures bare-metal CPUID responses for invalid leaves
-    // so we can return consistent values when virtualizing.
-    //
-#if STEALTH_CPUID_CACHING
-    stealth_init_cpuid_cache();
-#endif
+    RtlZeroMemory(g_vcpu, sizeof(VIRTUAL_MACHINE_STATE) * g_cpu_count);
+
+
+    {
+        KAPC_STATE apc_state;
+        KeStackAttachProcess(PsInitialSystemProcess, &apc_state);
+        g_system_cr3 = __readcr3();
+        KeUnstackDetachProcess(&apc_state);
+    }
 
     if (!ept_init())
     {
-        DbgPrintEx(0, 0, "[hv] EPT initialization failed!\n");
+        HV_LOG(0, 0, "[hv] EPT initialization failed!\n");
         return FALSE;
     }
 
@@ -567,6 +901,28 @@ vmx_init(VOID)
             ((PUCHAR)vcpu->msr_bitmap_va)[0x800 + msr_idx / 8] |= (UCHAR)(1 << (msr_idx % 8));
         }
 
+#if STEALTH_VIRTUALIZE_PMU
+        {
+            const UINT32 read_write_msrs[] = {
+                IA32_MPERF, IA32_APERF, IA32_PERF_GLOBAL_CTRL
+            };
+            for (UINT32 bitmap_idx = 0;
+                 bitmap_idx < RTL_NUMBER_OF(read_write_msrs);
+                 bitmap_idx++)
+            {
+                UINT32 msr_idx = read_write_msrs[bitmap_idx];
+                ((PUCHAR)vcpu->msr_bitmap_va)[msr_idx / 8] |=
+                    (UCHAR)(1 << (msr_idx % 8));
+                ((PUCHAR)vcpu->msr_bitmap_va)[0x800 + msr_idx / 8] |=
+                    (UCHAR)(1 << (msr_idx % 8));
+            }
+        }
+#endif
+#if STEALTH_VIRTUALIZE_TIMERS
+        ((PUCHAR)vcpu->msr_bitmap_va)[IA32_X2APIC_CUR_COUNT / 8] |=
+            (UCHAR)(1 << (IA32_X2APIC_CUR_COUNT % 8));
+#endif
+
         vcpu->msr_bitmap_pa = va_to_pa(
             (PVOID)vcpu->msr_bitmap_va);
 
@@ -605,6 +961,26 @@ vmx_init(VOID)
             return FALSE;
     }
 
+    if (!ept_setup_timer_hooks())
+    {
+        HV_LOG(0, 0, "[hv] Timer virtualization setup failed!\n");
+        return FALSE;
+    }
+
+    protect_init();
+
+    /*
+     * Capture and allocate every per-core host GDT before cloning the host
+     * page tables or freezing the conceal manifest.  vmx_setup_vmcs() runs
+     * on the same core later and only validates/reuses this allocation.
+     */
+    if (!broadcast_prepare_host_state())
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_ALLOCATION;
+        HV_LOG(0, 0, "[hv] Per-core host GDT preparation failed!\n");
+        return FALSE;
+    }
+
     //
     // build private host page tables AFTER all allocations are done.
     // The snapshot must include PTEs for VMM stacks, bitmaps, and all
@@ -614,7 +990,7 @@ vmx_init(VOID)
 #if USE_PRIVATE_HOST_CR3
     if (!hostcr3_build())
     {
-        DbgPrintEx(0, 0, "[hv] Host CR3 build failed!\n");
+        HV_LOG(0, 0, "[hv] Host CR3 build failed!\n");
         return FALSE;
     }
 #endif
@@ -626,7 +1002,25 @@ vmx_init(VOID)
 #if USE_PRIVATE_HOST_IDT
     if (!hostidt_build())
     {
-        DbgPrintEx(0, 0, "[hv] Host IDT build failed!\n");
+        HV_LOG(0, 0, "[hv] Host IDT build failed!\n");
+        return FALSE;
+    }
+#endif
+
+    if (!root_transport_snapshot_metadata())
+    {
+        g_hv_capabilities.Failure = HV_FAILURE_ALLOCATION;
+        return FALSE;
+    }
+
+#if STEALTH_CONCEAL_HOST_PAGES
+    if (g_stealth_enabled &&
+        !ept_conceal_prepare())
+    {
+        HV_LOG(
+            0, 0,
+            "[hv] Conceal manifest preparation failed: %u\n",
+            g_hv_capabilities.Failure);
         return FALSE;
     }
 #endif
@@ -637,24 +1031,96 @@ vmx_init(VOID)
     {
         if (!g_vcpu[i].launched)
         {
-            DbgPrintEx(0, 0, "[hv] Core %u failed to launch!\n", i);
+            HV_LOG(0, 0, "[hv] Core %u failed to launch; rolling back launched cores.\n", i);
+            broadcast_terminate_initializing(FALSE);
             return FALSE;
         }
     }
 
-    DbgPrintEx(0, 0, "[hv] All %u cores virtualized successfully!\n", g_cpu_count);
+    HV_LOG(0, 0, "[hv] All %u cores virtualized successfully!\n", g_cpu_count);
+    if (!root_transport_mark_awaiting_bootstrap())
+    {
+        g_hv_capabilities.Failure =
+            HV_FAILURE_REQUIRED_CONTROLS;
+        broadcast_terminate_initializing(TRUE);
+        return FALSE;
+    }
+#if STEALTH_CONCEAL_HOST_PAGES
+#if !OPHION_PRODUCTION
+    if (g_stealth_enabled)
+    {
+        if (!broadcast_conceal_invept())
+        {
+            HV_LOG(0, 0, "[hv] Conceal INVEPT failed\n");
+            broadcast_terminate_initializing(TRUE);
+            return FALSE;
+        }
+    }
+#endif
+
+    eac_stealth_apply();
+#endif
+
+    return TRUE;
+}
+
+BOOLEAN
+vmx_all_stopped(VOID)
+{
+    VIRTUAL_MACHINE_STATE * vcpu_base =
+        root_transport_vcpu_base();
+    UINT32 processor_count =
+        root_transport_processor_count();
+    UINT32 i;
+
+    if (!vcpu_base)
+    {
+        vcpu_base = g_vcpu;
+        processor_count = g_cpu_count;
+    }
+    if (!vcpu_base)
+        return TRUE;
+    for (i = 0; i < processor_count; i++)
+    {
+        if (vcpu_base[i].vmxon_active ||
+            vcpu_base[i].launched ||
+            vcpu_base[i].in_root)
+            return FALSE;
+    }
     return TRUE;
 }
 
 VOID
 vmx_terminate(VOID)
 {
-    if (!g_vcpu)
-        return;
+    VIRTUAL_MACHINE_STATE * vcpu_base =
+        root_transport_vcpu_base();
+    UINT32 processor_count =
+        root_transport_processor_count();
 
-    for (UINT32 i = 0; i < g_cpu_count; i++)
+    if (!vcpu_base)
     {
-        VIRTUAL_MACHINE_STATE * vcpu = &g_vcpu[i];
+        vcpu_base = g_vcpu;
+        processor_count = g_cpu_count;
+    }
+    if (!vcpu_base)
+        return;
+    if (!vmx_all_stopped())
+    {
+        HV_LOG(0, 0,
+            "[hv] Refusing to free live VMX resources; a vCPU is still active\n");
+        return;
+    }
+
+
+    ept_destroy_timer_hooks();
+    ept_conceal_destroy();
+
+    ept_destroy_splits();
+
+    for (UINT32 i = 0; i < processor_count; i++)
+    {
+        VIRTUAL_MACHINE_STATE * vcpu = &vcpu_base[i];
 
         //
         // free per-VCPU resources.
@@ -676,14 +1142,16 @@ vmx_terminate(VOID)
             ExFreePoolWithTag((PVOID)vcpu->io_bitmap_va_b, HV_POOL_TAG);
     }
 
+    protect_destroy();
+
     if (g_ept)
     {
-        for (UINT32 i = 0; i < g_cpu_count; i++)
+        for (UINT32 i = 0; i < processor_count; i++)
         {
-            if (g_vcpu[i].ept_page_table)
-                MmFreeContiguousMemory(g_vcpu[i].ept_page_table);
+            if (vcpu_base[i].ept_page_table)
+                MmFreeContiguousMemory(vcpu_base[i].ept_page_table);
         }
-        ExFreePoolWithTag(g_ept, HV_POOL_TAG);
+        MmFreeContiguousMemory(g_ept);
         g_ept = NULL;
     }
 
@@ -696,14 +1164,15 @@ vmx_terminate(VOID)
 #endif
 
 #if USE_PRIVATE_HOST_GDT
-    for (UINT32 i = 0; i < g_cpu_count; i++)
+    for (UINT32 i = 0; i < processor_count; i++)
     {
-        hostgdt_destroy_for_vcpu(&g_vcpu[i]);
+        hostgdt_destroy_for_vcpu(&vcpu_base[i]);
     }
 #endif
 
-    ExFreePoolWithTag(g_vcpu, HV_POOL_TAG);
+    ExFreePoolWithTag(vcpu_base, HV_POOL_TAG);
     g_vcpu = NULL;
+    root_transport_release_metadata();
 
-    DbgPrintEx(0, 0, "[hv] VMX terminated on all cores.\n");
+    HV_LOG(0, 0, "[hv] VMX terminated on all cores.\n");
 }

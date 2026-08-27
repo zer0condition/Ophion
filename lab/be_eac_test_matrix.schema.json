@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ophion.eac.be-eac-test-matrix/1.0",
+  "title": "Ophion BE/EAC Fixture Test Matrix",
+  "description": "A fixture-evaluation matrix only. It contains no real anti-cheat test result and must not be treated as EAC or BattlEye validation.",
+  "type": "object",
+  "required": ["schema", "schema_version", "validation_scope", "real_anti_cheat_validation", "deferred_bridges", "strata", "detector_rows"],
+  "properties": {
+    "schema": { "const": "ophion.eac.be-eac-test-matrix" },
+    "schema_version": { "const": "1.0" },
+    "validation_scope": { "const": "mock-fixtures-only" },
+    "real_anti_cheat_validation": { "const": "not-performed" },
+    "deferred_bridges": {
+      "type": "array",
+      "allOf": [
+        { "contains": { "const": "real-binary" } },
+        { "contains": { "const": "KEVLAR" } }
+      ]
+    },
+    "strata": {
+      "type": "array",
+      "uniqueItems": true,
+      "allOf": [
+        { "contains": { "const": "clean-bare-metal" } },
+        { "contains": { "const": "hyper-v-vbs" } },
+        { "contains": { "const": "runtime-ophion" } },
+        { "contains": { "const": "boot-ophion" } },
+        { "contains": { "const": "attachment" } }
+      ]
+    },
+    "detector_rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "stratum", "source", "revision", "expected_evidence", "raw_artifact_path", "classification", "detector_kind"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "stratum": { "type": "string", "minLength": 1 },
+          "source": { "type": "string", "minLength": 1 },
+          "revision": { "type": "string", "minLength": 1 },
+          "expected_evidence": { "type": "string", "minLength": 1 },
+          "raw_artifact_path": { "type": "string", "minLength": 1 },
+          "classification": { "enum": ["pass", "fail", "skip", "inconclusive"] },
+          "detector_kind": { "enum": ["hard", "heuristic"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

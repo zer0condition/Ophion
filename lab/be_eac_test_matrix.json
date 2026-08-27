@@ -1,0 +1,19 @@
+{
+  "schema": "ophion.eac.be-eac-test-matrix",
+  "schema_version": "1.0",
+  "validation_scope": "mock-fixtures-only",
+  "real_anti_cheat_validation": "not-performed",
+  "deferred_bridges": ["real-binary", "KEVLAR"],
+  "strata": ["clean-bare-metal", "hyper-v-vbs", "runtime-ophion", "boot-ophion", "attachment"],
+  "detector_rows": [
+    {"id":"clean-hypervisor-cpuid","stratum":"clean-bare-metal","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"coherent SystemHypervisorDetailInformation (0xC5) and CPUID hypervisor bits","raw_artifact_path":"lab/fixtures/clean_hypervisor_coherent.jsonl","classification":"pass","detector_kind":"hard"},
+    {"id":"hyperv-synthetic-msr-floor","stratum":"hyper-v-vbs","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"direction is in the declared synthetic-MSR floor","raw_artifact_path":"lab/fixtures/synthetic_msr_direction_error.jsonl","classification":"fail","detector_kind":"hard"},
+    {"id":"runtime-kuser-qpc-order","stratum":"runtime-ophion","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"KUSER and QPC samples are strictly monotonic","raw_artifact_path":"lab/fixtures/kuser_qpc_nonmonotonic.jsonl","classification":"fail","detector_kind":"hard"},
+    {"id":"boot-nmi-metadata","stratum":"boot-ophion","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"NMI sample metadata is present or intentionally not-collected","raw_artifact_path":"lab/fixtures/unknown_tpm_measured_boot.jsonl","classification":"skip","detector_kind":"heuristic"},
+    {"id":"attachment-hypervisor-cpuid","stratum":"attachment","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"0xC5 and CPUID reports agree","raw_artifact_path":"lab/fixtures/hypervisor_cpuid_mismatch.jsonl","classification":"fail","detector_kind":"hard"},
+    {"id":"attachment-stack-image","stratum":"attachment","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"stack return is in an inventory image","raw_artifact_path":"lab/fixtures/stack_return_outside_image.jsonl","classification":"fail","detector_kind":"heuristic"},
+    {"id":"attachment-executable-backing","stratum":"attachment","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"executable allocation is image-backed","raw_artifact_path":"lab/fixtures/unbacked_executable_allocation.jsonl","classification":"fail","detector_kind":"heuristic"},
+    {"id":"attachment-image-verification","stratum":"attachment","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"module inventory SHA-256 matches image verification","raw_artifact_path":"lab/fixtures/module_image_verification_mismatch.jsonl","classification":"fail","detector_kind":"hard"},
+    {"id":"attachment-tpm-state","stratum":"attachment","source":"recorded-fixture","revision":"fixture-v1","expected_evidence":"TPM and measured-boot evidence has a known state","raw_artifact_path":"lab/fixtures/unknown_tpm_measured_boot.jsonl","classification":"inconclusive","detector_kind":"heuristic"}
+  ]
+}

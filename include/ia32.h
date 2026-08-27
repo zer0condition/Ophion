@@ -42,6 +42,31 @@
 #define IA32_LSTAR                     0xC0000082
 #define IA32_DS_AREA                   0x00000600
 
+#define IA32_APIC_BASE                  0x0000001B
+#define IA32_MPERF                      0x000000E7
+#define IA32_APERF                      0x000000E8
+#define IA32_PERF_GLOBAL_CTRL           0x0000038F
+#define IA32_X2APIC_LVT_TIMER           0x00000832
+#define IA32_X2APIC_INIT_COUNT          0x00000838
+#define IA32_X2APIC_CUR_COUNT           0x00000839
+#define IA32_X2APIC_DIV_CONF            0x0000083E
+
+#define IA32_APIC_BASE_X2APIC           (1ULL << 10)
+#define IA32_APIC_BASE_ENABLE           (1ULL << 11)
+#define IA32_APIC_BASE_ADDRESS_MASK     0x0000000FFFFFF000ULL
+
+#define XAPIC_LVT_TIMER_OFFSET          0x320
+#define XAPIC_INITIAL_COUNT_OFFSET      0x380
+#define XAPIC_CURRENT_COUNT_OFFSET      0x390
+#define XAPIC_DIVIDE_CONFIG_OFFSET      0x3E0
+#define HPET_GENERAL_CAPABILITIES       0x000
+#define HPET_GENERAL_CONFIGURATION      0x010
+#define HPET_MAIN_COUNTER               0x0F0
+
+#define CR4_PERFORMANCE_MONITOR_COUNTER_ENABLE (1ULL << 8)
+#define RDPMC_FIXED_COUNTER_FLAG                (1U << 30)
+#define RDPMC_FAST_MODE_FLAG                    (1U << 31)
+
 //
 // VMX-specific MSRs
 //
@@ -412,6 +437,8 @@ typedef union _MSR {
 #define VMCS_HOST_PAT                                0x00002C00
 #define VMCS_HOST_EFER                               0x00002C02
 
+#define VMCS_HOST_PERF_GLOBAL_CTRL                   0x00002C04
+#define VMCS_GUEST_PERF_GLOBAL_CTRL                  0x00002808
 //
 // 32-Bit Control Fields
 //
@@ -485,6 +512,7 @@ typedef union _MSR {
 #define VMCS_CTRL_CR0_READ_SHADOW                    0x00006004
 #define VMCS_CTRL_CR4_READ_SHADOW                    0x00006006
 #define VMCS_EXIT_QUALIFICATION                      0x00006400
+#define VMCS_GUEST_LINEAR_ADDRESS                    0x0000640A
 
 //
 // Natural-Width Guest-State Fields
@@ -592,6 +620,8 @@ typedef union _MSR {
 #define VMX_EXIT_REASON_PAGE_MODIFICATION_LOG_FULL    62
 #define VMX_EXIT_REASON_EXECUTE_XSAVES                63
 #define VMX_EXIT_REASON_EXECUTE_XRSTORS               64
+#define VMX_EXIT_REASON_EXECUTE_UMWAIT                67
+#define VMX_EXIT_REASON_EXECUTE_TPAUSE                68
 
 //
 // VMX Pin-Based Controls
@@ -653,6 +683,7 @@ typedef union _MSR {
 #define VM_EXIT_CTRL_LOAD_IA32_PAT                          (1U << 19)
 #define VM_EXIT_CTRL_SAVE_IA32_EFER                         (1U << 20)
 #define VM_EXIT_CTRL_LOAD_IA32_EFER                         (1U << 21)
+#define VM_EXIT_CTRL_SAVE_IA32_PERF_GLOBAL_CTRL             (1U << 30)
 
 //
 // VM-Entry Controls

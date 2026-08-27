@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "detectors": [
+    {
+      "name": "VMAware v2.8.1",
+      "repository": "https://github.com/NotRequiem/VMAware.git",
+      "revision": "1c1ae6054bb12f0f0379aa766b13bb3de77959c3",
+      "directory": "vmaware-2.8.1",
+      "expectedCommand": "cmake -S . -B build -A x64; cmake --build build --config Release",
+      "resultArtifact": "build/detector-results/vmaware-2.8.1.txt"
+    },
+    {
+      "name": "VMAware post-v2.8.1",
+      "repository": "https://github.com/NotRequiem/VMAware.git",
+      "revision": "419cd075f80b6972267ec7f767ac0ca049cfb69b",
+      "directory": "vmaware-post-2.8.1",
+      "expectedCommand": "cmake -S . -B build -A x64; cmake --build build --config Release",
+      "resultArtifact": "build/detector-results/vmaware-post-2.8.1.txt"
+    },
+    {
+      "name": "hvdetecc",
+      "repository": "https://github.com/can1357/hvdetecc.git",
+      "revision": "3c917e22cace45a2efd7af366cc9c5d05d01d62d",
+      "directory": "hvdetecc",
+      "expectedCommand": "cl /nologo /std:c++20 /EHsc *.cpp /Fe:hvdetecc.exe",
+      "resultArtifact": "build/detector-results/hvdetecc.txt"
+    },
+    {
+      "name": "checkhv_um",
+      "repository": "https://github.com/cMiraka/checkhv_um.git",
+      "revision": "33cf1422b2987bc3785f651f53ee9b5ad62a321e",
+      "directory": "checkhv_um",
+      "expectedCommand": "cl /nologo /std:c++17 /EHsc hv_um.cpp /Fe:checkhv_um.exe",
+      "resultArtifact": "build/detector-results/checkhv_um.txt"
+    },
+    {
+      "name": "void-stack Hypervisor-Detection",
+      "repository": "https://github.com/void-stack/Hypervisor-Detection.git",
+      "revision": "8763d864ff408b58868b4bc40f34de76a43e08a0",
+      "directory": "void-stack-hypervisor-detection",
+      "expectedCommand": "msbuild Hypervisor-Detection.sln /p:Configuration=Release /p:Platform=x64",
+      "resultArtifact": "build/detector-results/void-stack-hypervisor-detection.txt"
+    },
+    {
+      "name": "momo5502 EPT hook detection",
+      "repository": "https://github.com/momo5502/ept-hook-detection.git",
+      "revision": "6be1b44aa3de0adcd8216986fae4417b17eeda48",
+      "directory": "ept-hook-detection",
+      "expectedCommand": "cmake -S . -B build -A x64; cmake --build build --config Release",
+      "resultArtifact": "build/detector-results/ept-hook-detection.txt"
+    }
+  ]
+}

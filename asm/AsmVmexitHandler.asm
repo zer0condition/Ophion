@@ -5,8 +5,6 @@ PUBLIC asm_vmexit_handler
 
 EXTERN vmexit_handler:PROC
 EXTERN vmx_vmresume:PROC
-EXTERN vmx_return_rsp_for_vmxoff:PROC
-EXTERN vmx_return_rip_for_vmxoff:PROC
 
 .code _text
 
@@ -135,27 +133,21 @@ VmxoffPath PROC
     pop     r14
     pop     r15
 
-    ; skip xmm area + rflags + padding
-    ; 0x110 (xmm) + 0x08 (rflags) + 0x08 (padding) = 0x120
-    add     rsp, 0120h
+    movaps  xmm0, xmmword ptr [rsp+000h]
+    movaps  xmm1, xmmword ptr [rsp+010h]
+    movaps  xmm2, xmmword ptr [rsp+020h]
+    movaps  xmm3, xmmword ptr [rsp+030h]
+    movaps  xmm4, xmmword ptr [rsp+040h]
+    movaps  xmm5, xmmword ptr [rsp+050h]
+    ldmxcsr dword ptr [rsp+100h]
+    add     rsp, 0110h
 
-    sub     rsp, 020h
-    call    vmx_return_rsp_for_vmxoff
-    add     rsp, 020h
-    push    rax             ; save guest rsp
+    ; vmexit_leave_vmx replaced this slot with guest RFLAGS.
+    popfq
+    add     rsp, 08h
 
-    sub     rsp, 020h
-    call    vmx_return_rip_for_vmxoff
-    add     rsp, 020h
-
-    ; restore rsp and push rip for the ret
-    pop     rsp
-    push    rax
-
-    ; clear rax to indicate vmxoff success to the vmcall caller
-    xor     rax, rax
-
-    ; return to guest code (instruction after vmcall)
+    ; Return stack/RIP were prepared before VMXOFF. This preserves every GPR.
+    mov     rsp, [rsp]
     ret
 
 VmxoffPath ENDP

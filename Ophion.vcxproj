@@ -14,7 +14,7 @@
     <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
     <RootNamespace>Ophion</RootNamespace>
     <ProjectName>Ophion</ProjectName>
-    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion Condition="'$(OphionWdkVersion)' != ''">$(OphionWdkVersion)</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <!-- Configuration: x64 Release (Kernel Mode) -->
@@ -46,8 +46,10 @@
     <IntDir>$(ProjectDir)build\obj\$(Configuration)\</IntDir>
     <TargetName>Ophion</TargetName>
     <TargetExt>.sys</TargetExt>
-    <SignMode>TestSign</SignMode>
-    <TestCertificate>26F9E348962C59621D11296D690DD6D13E6B93DB</TestCertificate>
+    <OphionArtifactProfile>Diagnostic</OphionArtifactProfile>
+    <SignMode Condition="'$(OphionCertificateThumbprint)' == ''">Off</SignMode>
+    <SignMode Condition="'$(OphionCertificateThumbprint)' != ''">TestSign</SignMode>
+    <TestCertificate Condition="'$(OphionCertificateThumbprint)' != ''">$(OphionCertificateThumbprint)</TestCertificate>
   </PropertyGroup>
   <ItemDefinitionGroup>
     <DriverSign>
@@ -103,6 +105,7 @@
   <!-- Source Files -->
   <ItemGroup>
     <ClCompile Include="src\driver.c" />
+    <ClCompile Include="src\attachment.c" />
     <ClCompile Include="src\vmx.c" />
     <ClCompile Include="src\vmexit.c" />
     <ClCompile Include="src\ept.c" />
@@ -114,6 +117,14 @@
     <ClCompile Include="src\hostcr3.c" />
     <ClCompile Include="src\hostidt.c" />
     <ClCompile Include="src\hostgdt.c" />
+    <ClCompile Include="src\conceal.c" />
+    <ClCompile Include="src\eac_stealth.c" />
+    <ClCompile Include="src\byovd_conceal.c" />
+    <ClCompile Include="src\protect.c" />
+    <ClCompile Include="src\root_transport.c" />
+    <ClCompile Include="src\tracewipe.c" />
+
+
   </ItemGroup>
   <!-- Assembly Files (MASM x64) -->
   <ItemGroup>
@@ -128,10 +139,12 @@
   <!-- Header Files -->
   <ItemGroup>
     <ClInclude Include="include\hv.h" />
+    <ClInclude Include="include\hv_public.h" />
     <ClInclude Include="include\ia32.h" />
     <ClInclude Include="include\hv_types.h" />
     <ClInclude Include="include\asm_prototypes.h" />
     <ClInclude Include="include\stealth.h" />
+    <ClInclude Include="include\hv_attachment.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

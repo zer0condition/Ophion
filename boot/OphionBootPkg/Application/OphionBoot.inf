@@ -1,0 +1,59 @@
+## @file
+# OphionBoot.inf
+#
+# Resident DXE driver that brings the Ophion hypervisor up on every logical
+# processor at ReadyToBoot and installs a Microsoft Hyper-V guest persona
+# (CPUID leaves, MSR floor, hypercall page) so Windows caches a coherent
+# hypervisor identity from the first instruction.
+#
+# Install: place the built OphionBoot.efi on the ESP and launch it from the
+# firmware boot menu / Boot#### entry before the Windows loader. Secure Boot
+# must be off or the image enrolled. Bring-up happens at the ReadyToBoot
+# event only when launched from the boot manager context.
+##
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = OphionBoot
+  FILE_GUID                      = 5B1D9E40-8C2F-4A67-9E3B-2D54C7A8F106
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 0.1
+  ENTRY_POINT                    = OphionBootEntry
+
+[Sources]
+  OphionBoot.c
+  VmxCore.c
+  ExitHandler.c
+  Persona.c
+  Assembly.nasm
+  LaunchPad.nasm
+
+[Packages]
+  MdePkg/MdePkg.dec
+  OphionBootPkg/OphionBootPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  DebugLib
+  IoLib
+  MemoryAllocationLib
+  PcdLib
+  PrintLib
+  UefiDriverEntryPoint
+  UefiBootServicesTableLib
+  UefiLib
+
+[Protocols]
+  gEfiMpServiceProtocolGuid ## CONSUMES
+
+[Guids]
+  gEfiEventReadyToBootGuid
+
+[Depex]
+  TRUE
+
+[Pcd]
+  gOphionBootPkgTokenSpaceGuid.OphionBootMaxProcessors ## CONSUMES
+
+[BuildOptions]
+  MSFT:*_*_X64_CC_FLAGS = /FAcs /Zi /wd4201

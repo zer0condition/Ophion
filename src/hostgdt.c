@@ -7,10 +7,24 @@
 BOOLEAN
 hostgdt_build_for_vcpu(VIRTUAL_MACHINE_STATE * vcpu)
 {
-    UINT64 orig_base  = asm_get_gdt_base();
-    UINT16 orig_limit = asm_get_gdt_limit();
+    UINT64 orig_base;
+    UINT16 orig_limit;
+    PVOID gdt_copy;
 
-    PVOID gdt_copy = ExAllocatePool2(POOL_FLAG_NON_PAGED, PAGE_SIZE, HV_POOL_TAG);
+    if (!vcpu)
+        return FALSE;
+    if (vcpu->host_gdt)
+        return TRUE;
+
+    orig_base = asm_get_gdt_base();
+    orig_limit = asm_get_gdt_limit();
+    if (!orig_base ||
+        (SIZE_T)orig_limit + 1 > PAGE_SIZE)
+        return FALSE;
+    gdt_copy = ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        PAGE_SIZE,
+        HV_POOL_TAG);
     if (!gdt_copy)
         return FALSE;
 

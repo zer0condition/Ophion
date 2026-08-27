@@ -17,7 +17,13 @@
 #define MAX_PROCESSORS          256
 #define MAX_MTRR_RANGES         256
 
+#if OPHION_PRODUCTION
+// benign production tag: must not identify the project (pool-tag scanners
+// flag rare tags with no owning module). allocated and freed consistently.
+#define HV_POOL_TAG             'DptS'
+#else
 #define HV_POOL_TAG             'nhpO'
+#endif
 
 typedef struct _GUEST_REGS {
     UINT64 rax;
@@ -40,6 +46,7 @@ typedef struct _GUEST_REGS {
 
 typedef struct _VMX_VMXOFF_STATE {
     BOOLEAN executed;
+    BOOLEAN handoff;
     UINT64  guest_rip;
     UINT64  guest_rsp;
     UINT64  guest_cr3;
@@ -67,15 +74,34 @@ typedef struct _VMM_EPT_DYNAMIC_SPLIT {
         PEPT_PML2_ENTRY   Entry;
         PEPT_PML2_POINTER Pointer;
     } u;
+    UINT64 OriginalEntry;
     LIST_ENTRY SplitList;
 } VMM_EPT_DYNAMIC_SPLIT, *PVMM_EPT_DYNAMIC_SPLIT;
+
+typedef enum _EPT_MMIO_KIND {
+    EptMmioNone,
+    EptMmioHpet,
+    EptMmioLapic
+} EPT_MMIO_KIND;
+
+typedef struct _EPT_MMIO_HOOK {
+    BOOLEAN        active;
+    EPT_MMIO_KIND  kind;
+    UINT16         target_offset;
+    UINT16         target_size;
+    UINT64         physical_page;
+    UINT64         shadow_va;
+    UINT64         shadow_pa;
+    UINT64         original_entry;
+    PEPT_PML1_ENTRY entry;
+} EPT_MMIO_HOOK, *PEPT_MMIO_HOOK;
 
 typedef struct _EPT_STATE {
     MTRR_RANGE_DESCRIPTOR mem_ranges[MAX_MTRR_RANGES];
     UINT32                num_ranges;
     UINT8                 default_type;
     BOOLEAN               ad_supported;
-    LIST_ENTRY            hooked_pages;    // reserved for future EPT hooks
+    LIST_ENTRY            hooked_pages;    // owns dynamic EPT split allocations
 
     //
     // INVVPID capability bits (cached from IA32_VMX_EPT_VPID_CAP)
@@ -85,10 +111,48 @@ typedef struct _EPT_STATE {
     BOOLEAN               invvpid_single_context;
     BOOLEAN               invvpid_all_contexts;
     BOOLEAN               invvpid_single_retaining_globals;
+    BOOLEAN               mtf_supported;
+    BOOLEAN               execute_only_supported;
+    BOOLEAN               invept_supported;
+    BOOLEAN               invept_single_context;
+    BOOLEAN               invept_all_contexts;
+    BOOLEAN               hpet_counter_64bit;
+    UINT64                hpet_physical;
+    UINT64                hpet_period_fs;
+    UINT64                tsc_frequency;
 } EPT_STATE, *PEPT_STATE;
+
+typedef struct _HV_PROCESSOR_TOPOLOGY_ENTRY {
+    PROCESSOR_NUMBER Processor;
+    UINT32           Index;
+} HV_PROCESSOR_TOPOLOGY_ENTRY, *PHV_PROCESSOR_TOPOLOGY_ENTRY;
+
+typedef struct _HV_CAPABILITY_RECORD {
+    UINT32 CpuCount;
+    UINT32 PhysicalAddressBits;
+    UINT64 MaximumGuestPhysicalAddress;
+    UINT32 ParentFlags;
+    UINT32 ParentFeatures;
+    UINT32 CapabilityFlags;
+    UINT32 Failure;
+    CHAR   ParentVendor[16];
+} HV_CAPABILITY_RECORD, *PHV_CAPABILITY_RECORD;
+
+typedef enum _HV_CPUID_LEAF_CLASS {
+    HvCpuidLeafBasic,
+    HvCpuidLeafStructured,
+    HvCpuidLeafExtended,
+    HvCpuidLeafClassCount
+} HV_CPUID_LEAF_CLASS;
+
 
 typedef struct _VIRTUAL_MACHINE_STATE {
 
+    // Kept first so the root NMI stub can set it without C/Windows calls.
+    volatile LONG host_nmi_pending;
+
+    UINT64 original_cr0;
+    UINT64 original_cr4;
     UINT64 vmxon_va;
     UINT64 vmxon_pa;
     UINT64 vmcs_va;
@@ -116,7 +180,20 @@ typedef struct _VIRTUAL_MACHINE_STATE {
     UINT64      vmexit_rip;
     BOOLEAN     in_root;
     BOOLEAN     launched;
+    BOOLEAN     vmxon_active;
+    BOOLEAN     detached;
+    BOOLEAN     waitpkg_enabled;
+    BOOLEAN     vpid_enabled;
+    UINT32      primary_dynamic_forced;
+    BOOLEAN     protect_cr3_exiting;
     BOOLEAN     advance_rip;
+    BOOLEAN     failed;
+    BOOLEAN     terminal;
+    UINT32      last_failure;
+    UINT32      last_vm_instruction_error;
+    UINT64      total_exits;
+    UINT64      exit_counters[HV_STATUS_EXIT_REASON_COUNT];
+
 
     VMX_VMXOFF_STATE vmxoff;
 
@@ -128,6 +205,53 @@ typedef struct _VIRTUAL_MACHINE_STATE {
     //
     UINT64  tsc_cpuid_entry;        // TSC recorded at start of CPUID VM-exit handler
     BOOLEAN tsc_rdtsc_armed;        // TRUE = next RDTSC/RDTSCP should be compensated
+    UINT64  cpuid_cost[HvCpuidLeafClassCount];
+    UINT64  cpuid_jitter[HvCpuidLeafClassCount];
+    UINT64  tsc_cpuid_cost;
+    UINT64  tsc_last_value;
+    UINT32  tsc_variance_sequence;
+
+
+    //
+    // PMU virtualization. PERF_GLOBAL_CTRL is loaded as zero on VM-exit and
+    // restored from the guest VMCS field on entry. APERF/MPERF biases remove
+    // the exact root-mode deltas sampled at handler entry/exit.
+    //
+    BOOLEAN pmu_isolated;
+    BOOLEAN aperf_mperf_supported;
+    UINT8   pmu_version;
+    UINT8   pmu_gp_count;
+    UINT8   pmu_gp_width;
+    UINT8   pmu_fixed_count;
+    UINT8   pmu_fixed_width;
+    UINT32  pmu_fixed_bitmap;
+    UINT64  perf_global_ctrl;
+    UINT64  aperf_root_entry;
+    UINT64  mperf_root_entry;
+    UINT64  aperf_root_bias;
+    UINT64  mperf_root_bias;
+    UINT64  aperf_guest_offset;
+    UINT64  mperf_guest_offset;
+
+    //
+    // Per-vCPU timer MMIO state. A permission fault temporarily maps either
+    // the shadow page or the real MMIO page; MTF restores the trap after the
+    // retried instruction.
+    //
+    EPT_MMIO_HOOK hpet_hook;
+    EPT_MMIO_HOOK lapic_hook;
+    PVOID   hpet_va;
+    UINT64  root_tsc_entry;
+    UINT64  root_tsc_bias;
+    BOOLEAN timer_bias_pending;
+    UINT64  hpet_last_value;
+    PEPT_MMIO_HOOK mtf_hook;
+    PVOID   lapic_va;
+    BOOLEAN x2apic_enabled;
+    UINT32  lapic_root_entry;
+    UINT64  lapic_root_bias;
+    UINT32  lapic_initial_count;
+    UINT32  lapic_last_value;
 
     //
     // pending external interrupt for deferred re-injection
@@ -164,9 +288,15 @@ typedef struct _VIRTUAL_MACHINE_STATE {
 
 #define VMCALL_TEST             0x00000001
 #define VMCALL_VMXOFF           0x00000002
+#define VMCALL_INVEPT           0x00000003
+#define VMCALL_PROTECT_REFRESH  0x00000004
+#define VMCALL_SEAL_STEP        HV_ROOT_VMCALL_SEAL_STEP
+#define VMCALL_STOP_STEP        HV_ROOT_VMCALL_STOP_STEP
+#define VMCALL_BOOTSTRAP_STEP   HV_ROOT_VMCALL_BOOTSTRAP_STEP
+#define VMCALL_ROOT_COMMAND     HV_ROOT_VMCALL_COMMAND
+#define VMCALL_CONCEAL_COMMIT   0x00007FFD
+#define VMCALL_INIT_ROLLBACK    0x00007FFE
 
-// per-cpu NMI pending flag for host IDT NMI handler
-extern volatile LONG g_host_nmi_pending[MAX_PROCESSORS];
 
 typedef struct _HOST_IDT_STATE {
     DECLSPEC_ALIGN(16) IDT_GATE_DESCRIPTOR_64 idt[IDT_NUM_ENTRIES];
@@ -177,6 +307,10 @@ typedef struct _HOST_IDT_STATE {
 extern VIRTUAL_MACHINE_STATE * g_vcpu;
 extern EPT_STATE *             g_ept;
 extern UINT32                  g_cpu_count;
+extern HV_PROCESSOR_TOPOLOGY_ENTRY g_processor_topology[MAX_PROCESSORS];
+extern HV_CAPABILITY_RECORD        g_hv_capabilities;
 extern UINT64                  g_system_cr3;
 extern UINT64 *                g_msr_bitmap_invalid;
 extern HOST_IDT_STATE          g_host_idt;
+extern volatile LONG           g_vmxoff_nmi_deferred;
+extern volatile LONG           g_vmxoff_transition_count;

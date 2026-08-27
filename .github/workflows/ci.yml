@@ -1,0 +1,30 @@
+name: tooling
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  contract-and-probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Contract assertions
+        shell: pwsh
+        run: |
+          ./tests/contracts.ps1
+          ./tests/driver-lifecycle.ps1
+      - name: Fixture and evidence-boundary tests
+        shell: pwsh
+        run: |
+          ./tests/attachment-preflight.ps1
+          ./tests/tpm-audit.ps1
+          ./tests/research-case.ps1
+          python ./tests/eac_startup_harness_test.py
+          python ./tests/lifecycle_models_test.py
+      - name: Build x64 probe
+        shell: pwsh
+        run: ./tools/build-probe.ps1 -Configuration Release -WarningsAsErrors

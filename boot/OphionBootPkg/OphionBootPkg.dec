@@ -1,0 +1,27 @@
+## @file
+# OphionBootPkg.dec
+# Package declaration for the Ophion boot-time hypervisor application.
+#
+# Copyright (c) 2026 NetVar1337. MIT licensed.
+##
+
+[Defines]
+  DEC_SPECIFICATION              = 0x00010005
+  PACKAGE_NAME                   = OphionBootPkg
+  PACKAGE_GUID                   = 8F7A2C61-4B23-4E9D-9A55-3C1DF2E8B0A4
+  PACKAGE_VERSION                = 0.1
+
+[Includes]
+  Include
+
+[Guids]
+  gOphionBootPkgTokenSpaceGuid  = { 0x9d6e3c22, 0x5f4a, 0x4b71, { 0x8c, 0x2e, 0x6f, 0x17, 0x44, 0xa5, 0xb0, 0xd3 } }
+
+[PcdsFixedAtBuild]
+  ## Maximum logical processors supported by the boot hypervisor.
+  gOphionBootPkgTokenSpaceGuid.OphionBootMaxProcessors|64|UINT32|0x00000001
+
+
+  ## Redirect registered VMM runtime pages to a dummy guest page after
+  ## the first 128 VM exits. Execute is stripped on the dummy mapping.
+  gOphionBootPkgTokenSpaceGuid.OphionBootConcealRuntime|TRUE|BOOLEAN|0x00000002

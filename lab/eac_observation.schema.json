@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ophion.eac.startup-observation/1.0",
+  "title": "Ophion EAC/EOS Startup Observation Fixture",
+  "description": "Fixture-only startup observation envelope. This schema neither invokes nor validates EAC, EOS, BattlEye, a game, or a driver.",
+  "type": "object",
+  "required": ["schema", "schema_version", "source", "sequence", "event_type", "captured_at", "raw_artifact_path", "payload"],
+  "properties": {
+    "schema": { "const": "ophion.eac.startup-observation" },
+    "schema_version": { "const": "1.0" },
+    "source": { "enum": ["recorded_fixture", "local_baseline"] },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "event_type": {
+      "enum": [
+        "fixture_metadata",
+        "system_hypervisor_detail",
+        "cpuid",
+        "kuser_qpc_sample",
+        "synthetic_msr_access",
+        "process_inventory",
+        "thread_inventory",
+        "module_inventory",
+        "memory_inventory",
+        "nmi_sample_metadata",
+        "image_verification",
+        "stack_walk",
+        "tpm_measured_boot_result"
+      ]
+    },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "raw_artifact_path": { "type": "string", "minLength": 1 },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "systemHypervisorDetail": {
+      "type": "object",
+      "required": ["system_information_class", "hypervisor_present"],
+      "properties": {
+        "system_information_class": { "const": "0xC5" },
+        "hypervisor_present": { "type": "boolean" }
+      }
+    },
+    "cpuid": {
+      "type": "object",
+      "required": ["leaf", "hypervisor_present"],
+      "properties": {
+        "leaf": { "type": "string" },
+        "hypervisor_present": { "type": "boolean" }
+      }
+    },
+    "kuserQpcSample": {
+      "type": "object",
+      "required": ["kuser_tick_100ns", "qpc_ticks"],
+      "properties": {
+        "kuser_tick_100ns": { "type": "integer", "minimum": 0 },
+        "qpc_ticks": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "syntheticMsrAccess": {
+      "type": "object",
+      "required": ["msr", "direction"],
+      "properties": {
+        "msr": { "oneOf": [{ "type": "integer" }, { "type": "string", "pattern": "^0x[0-9A-Fa-f]+$" }] },
+        "direction": { "enum": ["read", "write"] }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "description": "Inventory payloads preserve observed process, thread, module, certificate, or memory metadata; they do not inspect a protected process."
+    },
+    "nmiSampleMetadata": {
+      "type": "object",
+      "required": ["collection_state"],
+      "properties": {
+        "collection_state": { "enum": ["recorded", "not-collected", "unknown"] }
+      }
+    },
+    "imageVerification": {
+      "type": "object",
+      "required": ["module_id", "verification_result"],
+      "properties": {
+        "module_id": { "type": "string" },
+        "verification_result": { "enum": ["match", "mismatch", "unknown"] }
+      }
+    },
+    "stackWalk": {
+      "type": "object",
+      "required": ["return_address"],
+      "properties": {
+        "return_address": { "oneOf": [{ "type": "integer" }, { "type": "string", "pattern": "^0x[0-9A-Fa-f]+$" }] }
+      }
+    },
+    "tpmMeasuredBoot": {
+      "type": "object",
+      "required": ["state"],
+      "properties": {
+        "state": { "enum": ["verified", "mismatch", "unknown", "not-collected", "not-available"] }
+      }
+    }
+  }
+}

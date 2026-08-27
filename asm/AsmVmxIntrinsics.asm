@@ -3,6 +3,8 @@
 
 PUBLIC asm_invept
 PUBLIC asm_invvpid
+PUBLIC asm_vmxoff_checked
+
 
 .code _text
 
@@ -37,6 +39,20 @@ InvvpidFailure:
     mov     rax, 1
     ret
 asm_invvpid ENDP
+
+; asm_vmxoff_checked()
+; returns 0 after successful VMXOFF, 1 on VMfailValid/Invalid
+asm_vmxoff_checked PROC
+    vmxoff
+    jz      VmxoffFailure
+    jc      VmxoffFailure
+    xor     rax, rax
+    ret
+
+VmxoffFailure:
+    mov     rax, 1
+    ret
+asm_vmxoff_checked ENDP
 
 
 END

@@ -19,6 +19,9 @@
     <ClCompile Include="src\driver.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\attachment.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\vmx.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -40,6 +43,17 @@
     <ClCompile Include="src\util.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\conceal.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\tracewipe.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\root_transport.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+
+
   </ItemGroup>
 
   <ItemGroup>
@@ -53,6 +67,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\asm_prototypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\hv_attachment.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

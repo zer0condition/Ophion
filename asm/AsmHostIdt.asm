@@ -5,27 +5,38 @@ PUBLIC asm_host_nmi_handler
 PUBLIC asm_host_df_handler
 PUBLIC asm_host_gp_handler
 PUBLIC asm_host_default_handler
+EXTERN g_vmxoff_transition_count:DWORD
+EXTERN g_vmxoff_nmi_deferred:DWORD
 
-EXTERN g_host_nmi_pending:DWORD
 
 .code _text
 
 
-; NMI handler — sets per-cpu pending flag, vmexit handler injects to guest
+; NMI handler — resolves the current vCPU from the immutable HOST_RSP slot.
+; VIRTUAL_MACHINE_STATE.host_nmi_pending is deliberately the first member.
 
 asm_host_nmi_handler PROC
 
     push    rax
     push    rcx
+    cmp     dword ptr [g_vmxoff_transition_count], 0
+    je      HostNmiVmcs
+    lock inc dword ptr [g_vmxoff_nmi_deferred]
+    jmp     HostNmiDone
 
-    ; get cpu id from IA32_TSC_AUX (no memory access needed)
-    mov     ecx, 0C0000103h
-    rdmsr
-    and     eax, 0FFFh
+HostNmiVmcs:
 
-    lea     rcx, g_host_nmi_pending
-    mov     dword ptr [rcx + rax*4], 1
 
+    mov     ecx, 06C14h           ; VMCS_HOST_RSP
+    vmread  rax, rcx
+    jz      HostNmiDone
+    jc      HostNmiDone
+    mov     rax, qword ptr [rax+8] ; vCPU pointer stored at HOST_RSP+8
+    test    rax, rax
+    jz      HostNmiDone
+    mov     dword ptr [rax], 1
+
+HostNmiDone:
     pop     rcx
     pop     rax
     iretq

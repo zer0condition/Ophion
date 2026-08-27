@@ -111,8 +111,12 @@ segment_get_descriptor(PUCHAR gdt_base, UINT16 selector, VMX_SEGMENT_SELECTOR * 
     result->Attributes.Unusable    = 0;
 }
 
-VOID
-segment_fill_vmcs(PVOID gdt_base, UINT32 seg_reg, UINT16 selector)
+BOOLEAN
+segment_fill_vmcs(
+    VIRTUAL_MACHINE_STATE * vcpu,
+    PVOID gdt_base,
+    UINT32 seg_reg,
+    UINT16 selector)
 {
     VMX_SEGMENT_SELECTOR seg = {0};
 
@@ -132,8 +136,10 @@ segment_fill_vmcs(PVOID gdt_base, UINT32 seg_reg, UINT16 selector)
     //
     // write to VMCS — each segment field is offset by seg_reg * 2
     //
-    __vmx_vmwrite(VMCS_GUEST_ES_SELECTOR + seg_reg * 2,      selector);
-    __vmx_vmwrite(VMCS_GUEST_ES_LIMIT + seg_reg * 2,         seg.Limit);
-    __vmx_vmwrite(VMCS_GUEST_ES_ACCESS_RIGHTS + seg_reg * 2, seg.Attributes.AsUInt);
-    __vmx_vmwrite(VMCS_GUEST_ES_BASE + seg_reg * 2,          seg.Base);
+    return
+        vmx_vmwrite_checked(vcpu, VMCS_GUEST_ES_SELECTOR + seg_reg * 2, selector) &&
+        vmx_vmwrite_checked(vcpu, VMCS_GUEST_ES_LIMIT + seg_reg * 2, seg.Limit) &&
+        vmx_vmwrite_checked(vcpu, VMCS_GUEST_ES_ACCESS_RIGHTS + seg_reg * 2,
+                            seg.Attributes.AsUInt) &&
+        vmx_vmwrite_checked(vcpu, VMCS_GUEST_ES_BASE + seg_reg * 2, seg.Base);
 }

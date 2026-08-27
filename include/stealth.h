@@ -18,12 +18,11 @@
 // compensate TSC for VM-exit overhead
 // defeats: hvdetecc VM::TIMER, RDTSC+CPUID+RDTSC timing attacks
 //
-// approach: after CPUID exit, dynamically enable RDTSC exiting for one
-// instruction. the trapped RDTSC returns a compensated value that hides
-// the VM-exit overhead, then RDTSC exiting is disabled. zero drift —
-// TSC_OFFSET is never modified, only one RDTSC per CPUID is trapped.
+// approach: the CPUID path traps one following RDTSC/RDTSCP and mirrors its
+// one-shot hidden residency into the next HPET/LAPIC read. No persistent
+// per-vCPU TSC offset is accumulated, avoiding cross-core clock skew.
 //
-#define STEALTH_COMPENSATE_TIMING           0
+#define STEALTH_COMPENSATE_TIMING           1
 
 //
 // use cached bare-metal CPUID for invalid/hypervisor leaves
@@ -31,12 +30,52 @@
 //
 #define STEALTH_CPUID_CACHING               1
 
+// Exclude VMX-root execution from architectural counters and compensate
+// APERF/MPERF reads with per-vCPU measured root deltas.
+#define STEALTH_VIRTUALIZE_PMU              1
+
+// Virtualize guest-visible HPET/LAPIC count reads with per-vCPU EPT shadows.
+#define STEALTH_VIRTUALIZE_TIMERS           1
+//
+// Hide selected host-only VMXON/VMCS/bitmap/root-stack allocations behind
+// a read-only zero page.  Live guest image/state is excluded.  Production
+// additionally hides fixed EPT controls; diagnostic mode leaves them visible
+// for post-launch protection registration.
+#define STEALTH_CONCEAL_HOST_PAGES          1
+//
+// Destructive cache/list manipulation is opt-in only.  It is not required
+// for VMX correctness and can trip PatchGuard or invalidate live loader state.
+#ifndef STEALTH_WIPE_LOADER_TRACES
+#define STEALTH_WIPE_LOADER_TRACES          0
+#endif
+
+// Heuristic kernel-stack rewriting is unsafe without unwind metadata.
+#ifndef STEALTH_EAC_STACK_SCRUB
+#define STEALTH_EAC_STACK_SCRUB             0
+#endif
+
+// Unload is disabled until every launched vCPU can prove VMXOFF completion.
+#ifndef OPHION_ALLOW_UNLOAD
+#define OPHION_ALLOW_UNLOAD                  0
+#endif
+
+// Genuine Hyper-V/VBS hypercall pass-through is not implemented.
+#ifndef OPHION_ALLOW_NESTED
+#define OPHION_ALLOW_NESTED                  0
+#endif
+
+
+
+
+
+
 //
 // use private (deep-copied) host page tables for VMCS_HOST_CR3
 // protects host-mode from guest/anti-cheat page table corruption
-// disabled by default — enable once base hv is verified stable
+// disabled until a preallocated two-generation snapshot, authenticated
+// all-core switch, and post-switch observation/reclamation protocol exist
 //
-#define USE_PRIVATE_HOST_CR3                1
+#define USE_PRIVATE_HOST_CR3                0
 
 //
 // private host IDT for VMCS_HOST_IDTR_BASE
@@ -95,6 +134,9 @@ typedef struct _STEALTH_CPUID_CACHE {
     UINT64  valid_xcr0_mask;
 
     BOOLEAN initialized;
+    BOOLEAN parent_hypervisor_present;
+    BOOLEAN parent_is_hyperv;
+    UINT32  parent_hyperv_features;
 
     //
     // calibrated bare-metal CPUID execution cost (min of N samples)
@@ -107,6 +149,11 @@ typedef struct _STEALTH_CPUID_CACHE {
     // if forced, we can't toggle it off — just use the armed flag.
     //
     BOOLEAN rdtsc_exiting_forced;
+    //
+    // min FYL2XP1 cost. void-stack scores VM when this is <= CPUID cost.
+    //
+    UINT64  bare_metal_fyl2xp1_cost;
+
 
 } STEALTH_CPUID_CACHE;
 
