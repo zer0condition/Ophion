@@ -1,0 +1,17 @@
+name: driver-lifecycle
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lifecycle-contracts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify driver lifecycle contracts
+        shell: pwsh
+        run: ./tests/driver-lifecycle.ps1

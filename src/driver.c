@@ -89,6 +89,8 @@ DriverEntry(
         return STATUS_HV_OPERATION_FAILED;
     }
 
+    device_obj->Flags &= ~DO_DEVICE_INITIALIZING;
+
     DbgPrintEx(0, 0, "[hv] Hypervisor loaded and active on all cores!\n");
     return STATUS_SUCCESS;
 }
@@ -117,6 +119,7 @@ DriverIoControl(
 
     UNREFERENCED_PARAMETER(device_obj);
 
+    irp->IoStatus.Information = 0;
     io_stack       = IoGetCurrentIrpStackLocation(irp);
     ioctl_code = io_stack->Parameters.DeviceIoControl.IoControlCode;
 
